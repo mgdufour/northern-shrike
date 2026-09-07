@@ -13,3 +13,7 @@ A space domain awareness common operating picture — a browser-based dashboard 
 - Orbit propagation runs entirely in the browser via [satellite.js](https://github.com/shashwatak/satellite.js).
 - Tracked-object TLEs are embedded directly in the page — no live network calls or backend needed.
 - The "Analyst Copilot" chat panel uses a Claude-specific capability (`window.claude.use`) that is only available when the page runs inside Claude's Artifact viewer. Outside that context it degrades gracefully — the map, catalog, and conjunction screening stay fully functional.
+
+## Roadmap
+
+- **Copilot on the public site.** Right now Copilot only works when this page is viewed as a Claude Artifact. To bring it to the GitHub Pages deployment, it needs a small backend (e.g. a Cloudflare Worker / Vercel function) that holds an Anthropic API key and exposes the same tool calls the Copilot already uses (`queryObjects`, `getObjectDetail`, `listCloseApproaches`, `catalogSummary`), so the client never touches the key directly.
