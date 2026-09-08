@@ -451,7 +451,10 @@ a{color:var(--accent);}
             <button class="view-btn active" data-view="globe" type="button">3D Globe</button>
           </div>
           <div class="sep"></div>
-          <span style="font-size:10.5px;color:var(--text-faint);">Day / Night Terminator</span>
+          <span class="li" style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--text-faint);">
+            <span class="swatch" style="background:rgb(47,106,158);"></span>Day
+            <span class="swatch" style="background:rgb(6,12,22);border:1px solid rgba(255,255,255,.3);"></span>Night
+          </span>
           <div class="legend-mini" id="legendMini"></div>
         </div>
         <div class="map-canvas-holder">
@@ -1749,15 +1752,6 @@ function llToBase(latDeg, lonDeg){
 function vsub(a,b){ return {x:a.x-b.x,y:a.y-b.y,z:a.z-b.z}; }
 function vcross(a,b){ return {x:a.y*b.z-a.z*b.y, y:a.z*b.x-a.x*b.z, z:a.x*b.y-a.y*b.x}; }
 function vnorm(a){ const m=Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z)||1; return {x:a.x/m,y:a.y/m,z:a.z/m}; }
-function pointInPolygon(pt, poly){
-  let inside = false;
-  for (let i=0, j=poly.length-1; i<poly.length; j=i++){
-    const xi=poly[i][0], yi=poly[i][1], xj=poly[j][0], yj=poly[j][1];
-    const intersect = ((yi>pt[1]) !== (yj>pt[1])) && (pt[0] < (xj-xi)*(pt[1]-yi)/((yj-yi)||1e-9) + xi);
-    if (intersect) inside = !inside;
-  }
-  return inside;
-}
 function initStars(){
   const stars = [];
   for (let i=0;i<160;i++){
@@ -1784,6 +1778,48 @@ function makeRotator(yawDeg, pitchDeg){
     const z1 = -p.x*sY + p.z*cY;
     return { x: x1, y: y1*cP - z1*sP, z: y1*sP + z1*cP };
   };
+}
+function makeInverseRotator(yawDeg, pitchDeg){
+  const rad = Math.PI/180;
+  const cY = Math.cos(yawDeg*rad), sY = Math.sin(yawDeg*rad);
+  const cP = Math.cos(pitchDeg*rad), sP = Math.sin(pitchDeg*rad);
+  return (p) => {
+    const y1 = p.y*cP + p.z*sP;
+    const z1 = -p.y*sP + p.z*cP;
+    const x1 = p.x;
+    return { x: x1*cY - z1*sY, y: y1, z: x1*sY + z1*cY };
+  };
+}
+
+const DAY_DISK_RGB = [47,106,158];
+const NIGHT_DISK_RGB = [6,12,22];
+let dayNightRasterCanvas = null;
+function drawDayNightDisk(cx, cy, earthR, sunBase, invRotate){
+  const WORK_R = 110;
+  const size = WORK_R*2;
+  if (!dayNightRasterCanvas){
+    dayNightRasterCanvas = document.createElement('canvas');
+    dayNightRasterCanvas.width = size; dayNightRasterCanvas.height = size;
+  }
+  const octx = dayNightRasterCanvas.getContext('2d');
+  const img = octx.createImageData(size, size);
+  const data = img.data;
+  for (let py=0; py<size; py++){
+    const ny = -(py-WORK_R)/WORK_R;
+    for (let px=0; px<size; px++){
+      const idx = (py*size+px)*4;
+      const nx = (px-WORK_R)/WORK_R;
+      const rr = nx*nx + ny*ny;
+      if (rr > 1){ data[idx+3] = 0; continue; }
+      const nz = Math.sqrt(1-rr);
+      const base = invRotate({ x:nx, y:ny, z:nz });
+      const dot = base.x*sunBase.x + base.y*sunBase.y + base.z*sunBase.z;
+      const rgb = dot > 0 ? DAY_DISK_RGB : NIGHT_DISK_RGB;
+      data[idx] = rgb[0]; data[idx+1] = rgb[1]; data[idx+2] = rgb[2]; data[idx+3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  ctx.drawImage(dayNightRasterCanvas, cx-earthR, cy-earthR, earthR*2, earthR*2);
 }
 
 const GLOBE_MAX_ALT_KM = 42000;
@@ -1817,44 +1853,25 @@ function renderGlobe(){
     return { sx: cx + v.x*radius, sy: cy - v.y*radius, z: v.z*radius };
   };
 
-  ctx.save();
-  ctx.beginPath(); ctx.arc(cx, cy, earthR, 0, Math.PI*2); ctx.clip();
-  ctx.fillStyle = '#14395c';
-  ctx.beginPath(); ctx.arc(cx, cy, earthR, 0, Math.PI*2); ctx.fill();
-
   const sub = subsolarPoint(new Date());
   const sunBase = llToBase(sub.lat, sub.lon);
+  const invRotate = makeInverseRotator(state.globeRotation.yaw, state.globeRotation.pitch);
+  drawDayNightDisk(cx, cy, earthR, sunBase, invRotate);
+
   let up = { x:0, y:1, z:0 };
   if (Math.abs(sunBase.y) > 0.98) up = { x:1, y:0, z:0 };
   const u = vnorm(vcross(up, sunBase));
   const v = vnorm(vcross(sunBase, u));
-  const loopScreen = [];
   const termBasePts = [];
   const N = 90;
   for (let i=0;i<N;i++){
     const t = (i/N)*Math.PI*2;
     const p = { x: Math.cos(t)*u.x + Math.sin(t)*v.x, y: Math.cos(t)*u.y + Math.sin(t)*v.y, z: Math.cos(t)*u.z + Math.sin(t)*v.z };
     termBasePts.push(p);
-    const s = toScreen(p, earthR);
-    loopScreen.push([s.sx, s.sy]);
-  }
-  const antisolarScreen = toScreen({ x:-sunBase.x, y:-sunBase.y, z:-sunBase.z }, earthR);
-  const antisolarInside = pointInPolygon([antisolarScreen.sx, antisolarScreen.sy], loopScreen);
-
-  ctx.fillStyle = 'rgba(2,5,12,0.85)';
-  if (antisolarInside){
-    ctx.beginPath();
-    loopScreen.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
-    ctx.closePath();
-    ctx.fill();
-  } else {
-    ctx.beginPath();
-    ctx.arc(cx, cy, earthR, 0, Math.PI*2);
-    loopScreen.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
-    ctx.closePath();
-    ctx.fill('evenodd');
   }
 
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, earthR, 0, Math.PI*2); ctx.clip();
   const strokeGreatLine = (points, style, dash) => {
     ctx.strokeStyle = style; ctx.setLineDash(dash||[]);
     let started = false;
