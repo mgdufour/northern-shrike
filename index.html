@@ -1381,6 +1381,10 @@ const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, 
   + "screening with no covariance data, not an operational probability of collision. If tool data doesn't cover the question, say "
   + "so plainly instead of speculating.";
 
+// Set after deploying worker/index.html to Cloudflare Workers, e.g. 'https://northern-shrike-copilot.<subdomain>.workers.dev'.
+// Left blank, Copilot simply reports itself unavailable outside the Claude Artifact viewer.
+const COPILOT_WORKER_URL = '';
+
 const state = {
   objects: [],
   activeCategories: new Set(CATS.map(c => c.id)),
@@ -2453,10 +2457,73 @@ async function sendToCopilot(text){
   }
 }
 
+// Drop-in replacement for window.claude.use('sample'): same (history, {tools}) => {text}
+// contract, but runs the agentic tool-use loop against our own Worker instead of the
+// Claude Artifact runtime. Tool execution itself still happens right here in the
+// browser, against the page's own live state — the Worker only ever proxies the
+// model call and never sees tracked-object data.
+function makeBackendSampleApi(workerUrl){
+  const MAX_TURNS = 6;
+  return async function sampleApi(history, opts){
+    const tools = (opts && opts.tools) || [];
+    const apiTools = tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+    const byName = {};
+    for (const t of tools) byName[t.name] = t;
+
+    let messages = history.map(m => ({ role: m.role, content: m.content }));
+
+    for (let turn = 0; turn < MAX_TURNS; turn++){
+      let resp;
+      try{
+        resp = await fetch(workerUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages, tools: apiTools }),
+        });
+      } catch(e){
+        throw { code: 'network_error', message: 'could not reach Copilot backend' };
+      }
+      if (resp.status === 429) throw { code: 'rate_limited' };
+      if (!resp.ok){
+        let detail = '';
+        try{
+          const errBody = (await resp.json()).error;
+          detail = (errBody && errBody.message) ? errBody.message : (typeof errBody === 'string' ? errBody : '');
+        } catch(e){}
+        throw { message: detail || ('backend returned ' + resp.status) };
+      }
+      const data = await resp.json();
+      const content = data.content || [];
+      messages.push({ role: 'assistant', content });
+
+      if (data.stop_reason !== 'tool_use'){
+        const text = content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+        return { text: text || '(no response)' };
+      }
+
+      const toolResults = [];
+      for (const block of content){
+        if (block.type !== 'tool_use') continue;
+        const tool = byName[block.name];
+        let result;
+        try{
+          result = tool ? await tool.execute(block.input) : { error: 'unknown tool ' + block.name };
+        } catch(e){
+          result = { error: String(e && e.message || e) };
+        }
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) });
+      }
+      messages.push({ role: 'user', content: toolResults });
+    }
+    throw { message: 'Copilot used too many tool calls without reaching an answer' };
+  };
+}
+
 async function initCopilot(){
   try{
-    if (!window.claude || !window.claude.use){ state.sampleApi = null; }
-    else state.sampleApi = await window.claude.use('sample');
+    if (window.claude && window.claude.use) state.sampleApi = await window.claude.use('sample');
+    else if (COPILOT_WORKER_URL) state.sampleApi = makeBackendSampleApi(COPILOT_WORKER_URL);
+    else state.sampleApi = null;
   } catch(e){ state.sampleApi = null; }
   if (!state.sampleApi){
     appendMessage('ai', 'Copilot capability is not available in this viewing context — the rest of the picture (map, catalog, screening) is fully live.');
