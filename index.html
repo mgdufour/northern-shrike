@@ -460,13 +460,16 @@ a{color:var(--accent);}
         <div class="panel-head">Space Weather<span class="count">NOAA SWPC</span></div>
         <div class="sw-body" id="spaceWeatherBody"></div>
       </div>
-      <div class="panel-head">Catalog Filters<span class="count" id="filterVisibleCount">0</span></div>
-      <div class="regime-summary" id="regimeSummary"></div>
-      <div class="filters" id="categoryFilters"></div>
-      <div class="panel-head" id="ownerFiltersToggle" style="cursor:pointer;user-select:none;">
-        <span><span class="bucket-chevron" id="ownerChevron" style="margin-right:6px;">&#9656;</span>Owner / Operator</span>
+      <div class="panel-head" id="categoryFiltersToggle" style="cursor:pointer;user-select:none;">
+        <span><span class="bucket-chevron open" id="categoryChevron" style="margin-right:6px;">&#9656;</span>Catalog Filters</span>
+        <span class="count" id="filterVisibleCount">0</span>
       </div>
-      <div class="filters" id="ownerFilters" style="display:none;"></div>
+      <div class="regime-summary" id="regimeSummary"></div>
+      <div class="filters" id="categoryFilters" style="display:block;"></div>
+      <div class="panel-head" id="ownerFiltersToggle" style="cursor:pointer;user-select:none;">
+        <span><span class="bucket-chevron open" id="ownerChevron" style="margin-right:6px;">&#9656;</span>Owner / Operator</span>
+      </div>
+      <div class="filters" id="ownerFilters" style="display:block;"></div>
       <div class="regime-chips" id="regimeChips"></div>
       <div class="search-box"><input type="text" id="searchInput" placeholder="Search by name or NORAD ID&hellip;"></div>
       <div class="list-mode-label" id="listModeLabel"></div>
@@ -2497,13 +2500,17 @@ function wireEvents(){
   document.getElementById('searchInput').addEventListener('input', e => {
     state.searchQuery = e.target.value; renderTable();
   });
-  document.getElementById('ownerFiltersToggle').addEventListener('click', () => {
-    const panel = document.getElementById('ownerFilters');
-    const chevron = document.getElementById('ownerChevron');
-    const open = panel.style.display !== 'none';
-    panel.style.display = open ? 'none' : 'block';
-    chevron.classList.toggle('open', !open);
-  });
+  const wireCollapsibleFilter = (toggleId, panelId, chevronId) => {
+    document.getElementById(toggleId).addEventListener('click', () => {
+      const panel = document.getElementById(panelId);
+      const chevron = document.getElementById(chevronId);
+      const open = panel.style.display !== 'none';
+      panel.style.display = open ? 'none' : 'block';
+      chevron.classList.toggle('open', !open);
+    });
+  };
+  wireCollapsibleFilter('ownerFiltersToggle', 'ownerFilters', 'ownerChevron');
+  wireCollapsibleFilter('categoryFiltersToggle', 'categoryFilters', 'categoryChevron');
   document.getElementById('runScreeningBtn').addEventListener('click', () => {
     runScreening(parseInt(document.getElementById('lookaheadSelect').value,10));
   });
