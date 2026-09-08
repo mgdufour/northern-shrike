@@ -1742,13 +1742,23 @@ function renderFlatMap(){
 
   ctx.strokeStyle = 'rgba(255,255,255,0.08)';
   ctx.lineWidth = 1;
+  ctx.font = '9px "IBM Plex Mono", monospace';
+  ctx.textAlign = 'center';
   for (let lon=-180; lon<=180; lon+=30){
     const [x] = project(0, lon, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,h); ctx.stroke();
+    const clampedX = Math.max(16, Math.min(w-16, x));
+    ctx.fillStyle = 'rgba(255,255,255,0.32)';
+    ctx.fillText(lon===0 ? '0°' : lon>0 ? lon+'°E' : (-lon)+'°W', clampedX, 11);
   }
+  ctx.textAlign = 'left';
   for (let lat=-60; lat<=60; lat+=30){
     const [,y] = project(lat, 0, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(w,y+0.5); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.32)';
+    ctx.fillText(lat===0 ? '0°' : lat>0 ? lat+'°N' : (-lat)+'°S', 4, y-3);
   }
   ctx.strokeStyle = 'rgba(255,255,255,0.22)';
   const [,yEq] = project(0,0,w,h);
@@ -1758,11 +1768,17 @@ function renderFlatMap(){
 
   ctx.strokeStyle = 'rgba(53,208,214,0.28)';
   ctx.setLineDash([4,4]);
+  ctx.font = '8.5px "IBM Plex Mono", monospace';
+  ctx.textAlign = 'right';
+  const tropicLabels = { '23.4':'TROPIC OF CANCER', '-23.4':'TROPIC OF CAPRICORN', '66.6':'ARCTIC CIRCLE', '-66.6':'ANTARCTIC CIRCLE' };
   for (const lat of [23.4,-23.4,66.6,-66.6]){
     const [,y] = project(lat,0,w,h);
     ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(w,y+0.5); ctx.stroke();
+    ctx.fillStyle = 'rgba(53,208,214,0.55)';
+    ctx.fillText(tropicLabels[lat], w-6, y-3);
   }
   ctx.setLineDash([]);
+  ctx.textAlign = 'left';
 
   const [sx,sy] = project(sub.lat, sub.lon, w, h);
   drawCelestialMarker(sx, sy, { rgb:[247,186,102], coreR:7, glowR:20, rays:8, label:'SUN' });
