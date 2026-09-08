@@ -1667,6 +1667,43 @@ function isDaylight(latDeg, lonDeg, sub){
   return (Math.sin(phi0)*Math.sin(phi) + Math.cos(phi0)*Math.cos(phi)*Math.cos(dLambda)) > 0;
 }
 
+function drawCelestialMarker(x, y, opts){
+  const { rgb, coreR, glowR, rays, label, opacity } = Object.assign(
+    { rays: 0, opacity: 1 }, opts
+  );
+  const [r,g,b] = rgb;
+  const a = (mul) => 'rgba('+r+','+g+','+b+','+(mul*opacity).toFixed(3)+')';
+
+  const glow = ctx.createRadialGradient(x,y,0,x,y,glowR);
+  glow.addColorStop(0, a(0.5));
+  glow.addColorStop(1, a(0));
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(x,y,glowR,0,Math.PI*2); ctx.fill();
+
+  if (rays > 0){
+    ctx.strokeStyle = a(0.6); ctx.lineWidth = 1.2;
+    for (let i=0;i<rays;i++){
+      const ang = (i/rays)*Math.PI*2;
+      const r1 = coreR+3, r2 = coreR+7;
+      ctx.beginPath();
+      ctx.moveTo(x+Math.cos(ang)*r1, y+Math.sin(ang)*r1);
+      ctx.lineTo(x+Math.cos(ang)*r2, y+Math.sin(ang)*r2);
+      ctx.stroke();
+    }
+  }
+
+  const core = ctx.createRadialGradient(x-coreR*0.3,y-coreR*0.3,0,x,y,coreR);
+  core.addColorStop(0, a(1));
+  core.addColorStop(1, a(0.72));
+  ctx.fillStyle = core;
+  ctx.beginPath(); ctx.arc(x,y,coreR,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle = a(0.9); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x,y,coreR,0,Math.PI*2); ctx.stroke();
+
+  ctx.fillStyle = a(1); ctx.font = 'bold 10px "IBM Plex Mono", monospace';
+  ctx.fillText(label, x+coreR+7, y+3);
+}
+
 function resizeCanvas(){
   const holder = canvas.parentElement;
   const rect = holder.getBoundingClientRect();
@@ -1728,21 +1765,11 @@ function renderFlatMap(){
   ctx.setLineDash([]);
 
   const [sx,sy] = project(sub.lat, sub.lon, w, h);
-  ctx.fillStyle = 'rgba(240,169,78,0.9)';
-  ctx.beginPath(); ctx.arc(sx,sy,5,0,Math.PI*2); ctx.fill();
-  ctx.strokeStyle = 'rgba(240,169,78,0.35)';
-  ctx.beginPath(); ctx.arc(sx,sy,9,0,Math.PI*2); ctx.stroke();
-  ctx.fillStyle = 'rgba(240,169,78,0.9)'; ctx.font = '9px "IBM Plex Mono", monospace';
-  ctx.fillText('SUN', sx+12, sy+3);
+  drawCelestialMarker(sx, sy, { rgb:[247,186,102], coreR:7, glowR:20, rays:8, label:'SUN' });
 
   const moonSub = sublunarPoint(new Date());
   const [mx,my] = project(moonSub.lat, moonSub.lon, w, h);
-  ctx.fillStyle = 'rgba(212,216,224,0.95)';
-  ctx.beginPath(); ctx.arc(mx,my,4,0,Math.PI*2); ctx.fill();
-  ctx.strokeStyle = 'rgba(212,216,224,0.4)';
-  ctx.beginPath(); ctx.arc(mx,my,7,0,Math.PI*2); ctx.stroke();
-  ctx.fillStyle = 'rgba(212,216,224,0.95)'; ctx.font = '9px "IBM Plex Mono", monospace';
-  ctx.fillText('MOON', mx+10, my+3);
+  drawCelestialMarker(mx, my, { rgb:[220,224,232], coreR:6, glowR:15, label:'MOON' });
 
   if (state.trail.length>1){
     ctx.lineWidth = 1.6;
@@ -1943,12 +1970,7 @@ function renderGlobe(){
   const sunScreen = toScreen(sunBase, R);
   if (!isOccluded(sunScreen.sx, sunScreen.sy, sunScreen.z, cx, cy, earthR)){
     const farSide = sunScreen.z <= 0;
-    ctx.fillStyle = farSide ? 'rgba(240,169,78,0.45)' : 'rgba(240,169,78,0.9)';
-    ctx.beginPath(); ctx.arc(sunScreen.sx, sunScreen.sy, 5, 0, Math.PI*2); ctx.fill();
-    ctx.strokeStyle = farSide ? 'rgba(240,169,78,0.18)' : 'rgba(240,169,78,0.35)';
-    ctx.beginPath(); ctx.arc(sunScreen.sx, sunScreen.sy, 9, 0, Math.PI*2); ctx.stroke();
-    ctx.fillStyle = farSide ? 'rgba(240,169,78,0.45)' : 'rgba(240,169,78,0.9)'; ctx.font = '9px "IBM Plex Mono", monospace';
-    ctx.fillText('SUN', sunScreen.sx+11, sunScreen.sy+3);
+    drawCelestialMarker(sunScreen.sx, sunScreen.sy, { rgb:[247,186,102], coreR:7, glowR:20, rays:8, label:'SUN', opacity: farSide ? 0.42 : 1 });
   }
 
   const moonSub = sublunarPoint(new Date());
@@ -1956,12 +1978,7 @@ function renderGlobe(){
   const moonScreen = toScreen(moonBase, R);
   if (!isOccluded(moonScreen.sx, moonScreen.sy, moonScreen.z, cx, cy, earthR)){
     const farSide = moonScreen.z <= 0;
-    ctx.fillStyle = farSide ? 'rgba(212,216,224,0.4)' : 'rgba(212,216,224,0.95)';
-    ctx.beginPath(); ctx.arc(moonScreen.sx, moonScreen.sy, 4, 0, Math.PI*2); ctx.fill();
-    ctx.strokeStyle = farSide ? 'rgba(212,216,224,0.18)' : 'rgba(212,216,224,0.4)';
-    ctx.beginPath(); ctx.arc(moonScreen.sx, moonScreen.sy, 7, 0, Math.PI*2); ctx.stroke();
-    ctx.fillStyle = farSide ? 'rgba(212,216,224,0.4)' : 'rgba(212,216,224,0.95)'; ctx.font = '9px "IBM Plex Mono", monospace';
-    ctx.fillText('MOON', moonScreen.sx+9, moonScreen.sy+3);
+    drawCelestialMarker(moonScreen.sx, moonScreen.sy, { rgb:[220,224,232], coreR:6, glowR:15, label:'MOON', opacity: farSide ? 0.42 : 1 });
   }
 
   if (state.trail.length > 1){
