@@ -1941,24 +1941,26 @@ function renderGlobe(){
   ring(35786, 'GEO', 'rgba(240,169,78,0.4)');
 
   const sunScreen = toScreen(sunBase, R);
-  if (sunScreen.z > 0){
-    ctx.fillStyle = 'rgba(240,169,78,0.9)';
+  if (!isOccluded(sunScreen.sx, sunScreen.sy, sunScreen.z, cx, cy, earthR)){
+    const farSide = sunScreen.z <= 0;
+    ctx.fillStyle = farSide ? 'rgba(240,169,78,0.45)' : 'rgba(240,169,78,0.9)';
     ctx.beginPath(); ctx.arc(sunScreen.sx, sunScreen.sy, 5, 0, Math.PI*2); ctx.fill();
-    ctx.strokeStyle = 'rgba(240,169,78,0.35)';
+    ctx.strokeStyle = farSide ? 'rgba(240,169,78,0.18)' : 'rgba(240,169,78,0.35)';
     ctx.beginPath(); ctx.arc(sunScreen.sx, sunScreen.sy, 9, 0, Math.PI*2); ctx.stroke();
-    ctx.fillStyle = 'rgba(240,169,78,0.9)'; ctx.font = '9px "IBM Plex Mono", monospace';
+    ctx.fillStyle = farSide ? 'rgba(240,169,78,0.45)' : 'rgba(240,169,78,0.9)'; ctx.font = '9px "IBM Plex Mono", monospace';
     ctx.fillText('SUN', sunScreen.sx+11, sunScreen.sy+3);
   }
 
   const moonSub = sublunarPoint(new Date());
   const moonBase = llToBase(moonSub.lat, moonSub.lon);
   const moonScreen = toScreen(moonBase, R);
-  if (moonScreen.z > 0){
-    ctx.fillStyle = 'rgba(212,216,224,0.95)';
+  if (!isOccluded(moonScreen.sx, moonScreen.sy, moonScreen.z, cx, cy, earthR)){
+    const farSide = moonScreen.z <= 0;
+    ctx.fillStyle = farSide ? 'rgba(212,216,224,0.4)' : 'rgba(212,216,224,0.95)';
     ctx.beginPath(); ctx.arc(moonScreen.sx, moonScreen.sy, 4, 0, Math.PI*2); ctx.fill();
-    ctx.strokeStyle = 'rgba(212,216,224,0.4)';
+    ctx.strokeStyle = farSide ? 'rgba(212,216,224,0.18)' : 'rgba(212,216,224,0.4)';
     ctx.beginPath(); ctx.arc(moonScreen.sx, moonScreen.sy, 7, 0, Math.PI*2); ctx.stroke();
-    ctx.fillStyle = 'rgba(212,216,224,0.95)'; ctx.font = '9px "IBM Plex Mono", monospace';
+    ctx.fillStyle = farSide ? 'rgba(212,216,224,0.4)' : 'rgba(212,216,224,0.95)'; ctx.font = '9px "IBM Plex Mono", monospace';
     ctx.fillText('MOON', moonScreen.sx+9, moonScreen.sy+3);
   }
 
