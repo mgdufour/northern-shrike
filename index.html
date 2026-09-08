@@ -1633,6 +1633,27 @@ function subsolarPoint(date){
   subLon = ((subLon+180) % 360 + 360) % 360 - 180;
   return { lat: decl, lon: subLon };
 }
+function sublunarPoint(date){
+  const rad = Math.PI/180;
+  const JD = date.getTime()/86400000 + 2440587.5;
+  const n = JD - 2451545.0;
+  let Lm = (218.316 + 13.176396*n) % 360; if (Lm<0) Lm += 360;
+  let Mm = (134.963 + 13.064993*n) % 360; if (Mm<0) Mm += 360;
+  let Fm = (93.272 + 13.229350*n) % 360; if (Fm<0) Fm += 360;
+  const lambda = (Lm + 6.289*Math.sin(Mm*rad)) * rad;
+  const beta = (5.128*Math.sin(Fm*rad)) * rad;
+  const epsilon = (23.439 - 0.0000004*n) * rad;
+  const sB = Math.sin(beta), cB = Math.cos(beta);
+  const sE = Math.sin(epsilon), cE = Math.cos(epsilon);
+  const sL = Math.sin(lambda), cL = Math.cos(lambda);
+  const decl = Math.asin(sB*cE + cB*sE*sL) / rad;
+  let alpha = Math.atan2(cB*sL*cE - sB*sE, cB*cL) / rad;
+  alpha = ((alpha % 360)+360) % 360;
+  const gmstDeg = (satellite.gstime(date)*180/Math.PI) % 360;
+  let subLon = alpha - gmstDeg;
+  subLon = ((subLon+180) % 360 + 360) % 360 - 180;
+  return { lat: decl, lon: subLon };
+}
 function terminatorLatForLon(lonDeg, sub){
   const rad = Math.PI/180;
   const dLambda = (lonDeg - sub.lon) * rad;
@@ -1711,6 +1732,17 @@ function renderFlatMap(){
   ctx.beginPath(); ctx.arc(sx,sy,5,0,Math.PI*2); ctx.fill();
   ctx.strokeStyle = 'rgba(240,169,78,0.35)';
   ctx.beginPath(); ctx.arc(sx,sy,9,0,Math.PI*2); ctx.stroke();
+  ctx.fillStyle = 'rgba(240,169,78,0.9)'; ctx.font = '9px "IBM Plex Mono", monospace';
+  ctx.fillText('SUN', sx+12, sy+3);
+
+  const moonSub = sublunarPoint(new Date());
+  const [mx,my] = project(moonSub.lat, moonSub.lon, w, h);
+  ctx.fillStyle = 'rgba(212,216,224,0.95)';
+  ctx.beginPath(); ctx.arc(mx,my,4,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle = 'rgba(212,216,224,0.4)';
+  ctx.beginPath(); ctx.arc(mx,my,7,0,Math.PI*2); ctx.stroke();
+  ctx.fillStyle = 'rgba(212,216,224,0.95)'; ctx.font = '9px "IBM Plex Mono", monospace';
+  ctx.fillText('MOON', mx+10, my+3);
 
   if (state.trail.length>1){
     ctx.lineWidth = 1.6;
@@ -1914,6 +1946,20 @@ function renderGlobe(){
     ctx.beginPath(); ctx.arc(sunScreen.sx, sunScreen.sy, 5, 0, Math.PI*2); ctx.fill();
     ctx.strokeStyle = 'rgba(240,169,78,0.35)';
     ctx.beginPath(); ctx.arc(sunScreen.sx, sunScreen.sy, 9, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = 'rgba(240,169,78,0.9)'; ctx.font = '9px "IBM Plex Mono", monospace';
+    ctx.fillText('SUN', sunScreen.sx+11, sunScreen.sy+3);
+  }
+
+  const moonSub = sublunarPoint(new Date());
+  const moonBase = llToBase(moonSub.lat, moonSub.lon);
+  const moonScreen = toScreen(moonBase, R);
+  if (moonScreen.z > 0){
+    ctx.fillStyle = 'rgba(212,216,224,0.95)';
+    ctx.beginPath(); ctx.arc(moonScreen.sx, moonScreen.sy, 4, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(212,216,224,0.4)';
+    ctx.beginPath(); ctx.arc(moonScreen.sx, moonScreen.sy, 7, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = 'rgba(212,216,224,0.95)'; ctx.font = '9px "IBM Plex Mono", monospace';
+    ctx.fillText('MOON', moonScreen.sx+9, moonScreen.sy+3);
   }
 
   if (state.trail.length > 1){
