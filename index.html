@@ -2036,6 +2036,8 @@ function renderGlobe(){
 
 /* ---------------- conjunction screening ---------------- */
 
+const CO_LOCATED_MAX_KM = 2;
+
 function runScreening(lookaheadHours){
   const btn = document.getElementById('runScreeningBtn');
   const body = document.getElementById('conjBody');
@@ -2053,6 +2055,7 @@ function runScreening(lookaheadHours){
 
     const results = [];
     let pairsChecked = 0;
+    let coLocatedExcluded = 0;
 
     for (const regime of Object.keys(buckets)){
       const arr = buckets[regime];
@@ -2079,14 +2082,19 @@ function runScreening(lookaheadHours){
         for (let j=i+1;j<m;j++){
           if (!valid[j]) continue;
           pairsChecked++;
-          let minD2 = Infinity, minS = 0;
+          let minD2 = Infinity, minS = 0, maxD2 = 0;
           for (let s=0;s<steps;s++){
             const ia = i*steps+s, ib = j*steps+s;
             const dx = px[ia]-px[ib], dy = py[ia]-py[ib], dz = pz[ia]-pz[ib];
             const d2 = dx*dx+dy*dy+dz*dz;
             if (d2 < minD2){ minD2 = d2; minS = s; }
+            if (d2 > maxD2) maxD2 = d2;
           }
           if (minD2 < thr2){
+            if (maxD2 < CO_LOCATED_MAX_KM*CO_LOCATED_MAX_KM){
+              coLocatedExcluded++;
+              continue;
+            }
             results.push({
               aName: arr[i].name, bName: arr[j].name, aId: arr[i].id, bId: arr[j].id,
               aCanadian: arr[i].isCanadian, bCanadian: arr[j].isCanadian,
@@ -2099,7 +2107,7 @@ function runScreening(lookaheadHours){
     }
 
     results.sort((a,b) => a.missKm - b.missKm);
-    state.conjunctions = { results, lookaheadHours, computedAt: now, pairsChecked };
+    state.conjunctions = { results, lookaheadHours, computedAt: now, pairsChecked, coLocatedExcluded };
     renderConjunctions();
     btn.disabled = false; btn.textContent = 'Run Screening';
   }, 30);
@@ -2182,7 +2190,9 @@ function renderConjunctions(){
   const c = state.conjunctions;
   renderAlertBadge();
   if (!c || !c.results.length){
-    body.innerHTML = '<div class="conj-empty">Screening complete over a '+(c?c.lookaheadHours:'')+'h window ('+(c?c.pairsChecked:0)+' regime-bucketed pairs compared) &mdash; no candidates crossed the screening threshold.</div>';
+    body.innerHTML = '<div class="conj-empty">Screening complete over a '+(c?c.lookaheadHours:'')+'h window ('+(c?c.pairsChecked:0)+' regime-bucketed pairs compared) &mdash; no candidates crossed the screening threshold.'
+      + (c && c.coLocatedExcluded ? ' ('+c.coLocatedExcluded+' co-located pair'+(c.coLocatedExcluded===1?'':'s')+', e.g. station modules or docked spacecraft, excluded.)' : '')
+      + '</div>';
     return;
   }
   const critical = c.results.filter(r => r.missKm < 5).sort((a,b) => {
@@ -2197,6 +2207,7 @@ function renderConjunctions(){
     '<div class="conj-empty" style="padding:8px 14px;border-bottom:1px solid var(--line);">'
     + c.results.length+' close-approach candidate'+(c.results.length===1?'':'s')+' found across '+c.pairsChecked+' pairs screened, '
     + c.lookaheadHours+'h lookahead, computed '+fmtUtc(c.computedAt)+'.'
+    + (c.coLocatedExcluded ? ' '+c.coLocatedExcluded+' pair'+(c.coLocatedExcluded===1?'':'s')+' excluded as co-located structures (station modules, docked spacecraft) rather than conjunctions.' : '')
     + (canadianCount ? ' <span class="ca-callout-count">🇨🇦 ' + canadianCount + ' critical involve' + (canadianCount===1?'s':'') + ' a Canadian spacecraft</span>' : '')
     + '</div>'
     + renderBucket('critical', 'CRITICAL &middot; &lt;5 km', critical, {canadianFlag:true})
