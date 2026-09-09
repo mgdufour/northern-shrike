@@ -1101,7 +1101,10 @@ const CAT_COLORS_MAP = {
   debris:'#e2645a', science:'#6fa8dc', starlink:'#c9d3e8', cubesat:'#e879b8'
 };
 
-const SPACE_WEATHER = {"updatedUtc":"2026-09-08 19:11:00Z","g":{"scale":0,"text":"none"},"s":{"scale":0,"text":"none"},"r":{"scale":0,"text":"none"},"kp":2.33,"flareClass":"B4.0","flareMaxClass":"C2.8","flareMaxTimeUtc":"2026-09-08T17:43:00Z"};
+const SPACE_WEATHER_FALLBACK = {"updatedUtc":"2026-09-08 19:11:00Z","g":{"scale":0,"text":"none"},"s":{"scale":0,"text":"none"},"r":{"scale":0,"text":"none"},"kp":2.33,"flareClass":"B4.0","flareMaxClass":"C2.8","flareMaxTimeUtc":"2026-09-08T17:43:00Z"};
+// Overwritten in place by loadLiveSpaceWeather() if a live NOAA SWPC read succeeds and
+// validates; renderSpaceWeather() always reads this variable, never the fallback directly.
+let SPACE_WEATHER = SPACE_WEATHER_FALLBACK;
 
 const COASTLINES=[
 [-163.71,-78.60,-163.11,-78.22,-161.25,-78.38,-160.25,-78.69,-159.48,-79.05,-159.21,-79.50,-161.13,-79.63,-162.44,-79.28,-163.03,-78.93,-163.07,-78.87,-163.71,-78.60]
@@ -1695,6 +1698,51 @@ function renderSpaceWeather(){
     + '<div class="sw-row"><span>Current X-ray (GOES)</span><b>'+esc(w.flareClass)+'</b></div>'
     + '<div class="sw-row"><span>24h peak flare</span><b>'+esc(w.flareMaxClass)+'</b></div>'
     + '<div class="sw-updated">NOAA SWPC &middot; updated '+esc(w.updatedUtc)+'</div>';
+}
+
+// Attempts to replace the baked-in space-weather snapshot with a live read from NOAA
+// SWPC's public JSON feeds (G/S/R storm scales + planetary Kp only — flare-class fields
+// stay on the static snapshot; that endpoint's shape isn't one this was verified against).
+// Every field is strictly validated before being accepted: a missing field, unexpected
+// type, network failure, or CORS rejection all fall through to the same catch block and
+// leave SPACE_WEATHER exactly as it was, so a bad or unreachable feed can never surface
+// broken data — it just silently keeps today's known-good static snapshot.
+async function loadLiveSpaceWeather(){
+  try{
+    const [scalesResp, kpResp] = await Promise.all([
+      fetch('https://services.swpc.noaa.gov/products/noaa-scales.json'),
+      fetch('https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json'),
+    ]);
+    if (!scalesResp.ok || !kpResp.ok) throw new Error('non-200 response from NOAA SWPC');
+    const scales = await scalesResp.json();
+    const kpRows = await kpResp.json();
+
+    const today = scales && scales['0'];
+    if (!today || !today.G || !today.S || !today.R) throw new Error('unexpected noaa-scales.json shape');
+    const parseScale = (entry) => {
+      const n = Number(entry && entry.Scale);
+      const t = entry && entry.Text;
+      if (!Number.isFinite(n) || typeof t !== 'string') throw new Error('unexpected scale entry shape');
+      return { scale: n, text: t.toLowerCase() };
+    };
+    const g = parseScale(today.G), s = parseScale(today.S), r = parseScale(today.R);
+
+    if (!Array.isArray(kpRows) || kpRows.length < 2) throw new Error('unexpected noaa-planetary-k-index.json shape');
+    const kp = Number(kpRows[kpRows.length - 1] && kpRows[kpRows.length - 1][1]);
+    if (!Number.isFinite(kp)) throw new Error('unexpected kp value');
+
+    SPACE_WEATHER = {
+      updatedUtc: new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z'),
+      g, s, r, kp,
+      flareClass: SPACE_WEATHER_FALLBACK.flareClass,
+      flareMaxClass: SPACE_WEATHER_FALLBACK.flareMaxClass,
+      flareMaxTimeUtc: SPACE_WEATHER_FALLBACK.flareMaxTimeUtc,
+    };
+    renderSpaceWeather();
+    console.info('[space weather] live NOAA SWPC G/S/R + Kp loaded; flare-class fields are still the static snapshot.');
+  } catch(e){
+    console.warn('[space weather] live fetch failed, staying on the static snapshot:', e && e.message);
+  }
 }
 
 /* ---------------- map ---------------- */
@@ -2920,6 +2968,7 @@ function init(){
   buildLegend();
   computeStats();
   renderSpaceWeather();
+  loadLiveSpaceWeather(); // fire-and-forget; re-renders the panel in place if it succeeds
   initCoastlines();
   updateAllPositions(new Date());
   resizeCanvas();
