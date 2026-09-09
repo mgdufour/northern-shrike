@@ -1383,7 +1383,8 @@ const COASTLINES=[
 const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, a space domain awareness common operating picture. "
   + "You have tool access to the live tracked-object catalog (real TLEs propagated with SGP4) and the most recent conjunction "
   + "screening results. Ground every factual claim in tool output rather than guessing — call queryObjects, getObjectDetail, "
-  + "listCloseApproaches, catalogSummary, focusObject, nextPass, overheadNow, estimateDecayRisk, or compareObjects as needed before answering. "
+  + "listCloseApproaches, catalogSummary, focusObject, nextPass, overheadNow, checkIllumination, estimateDecayRisk, or compareObjects "
+  + "as needed before answering. "
   + "Speak like a space operations analyst: concise, precise units (km, deg, km/s), operator terminology. If asked about collision "
   + "risk, be clear this is a simplified geometric proximity screening with no covariance data, not an operational probability of "
   + "collision. If asked about orbital decay or re-entry timing, be equally clear that estimateDecayRisk is a rough heuristic from "
@@ -2482,6 +2483,28 @@ function computeOverheadNow(latDeg, lonDeg){
   return visible;
 }
 
+const AU_KM = 149597870.7;
+
+// Cylindrical Earth-shadow model: an object is sunlit unless it's on the far side of
+// Earth from the sun and within a straight cylinder of Earth's radius extending away
+// from the sun. This ignores the sun's angular size (no penumbra/umbra distinction) and
+// Earth's oblateness — a standard, well-known simplification, not a precision eclipse
+// prediction. Returns true/false, or null if the object fails to propagate at this time.
+function isSunlit(o, date){
+  const pv = satellite.propagate(o.satrec, date);
+  if (!pv || !pv.position || typeof pv.position === 'boolean') return null;
+  const rSat = pv.position;
+  const sun = satellite.sunPos(satellite.jday(date));
+  const rSun = { x: sun.rsun[0]*AU_KM, y: sun.rsun[1]*AU_KM, z: sun.rsun[2]*AU_KM };
+  const sunMag = Math.sqrt(rSun.x*rSun.x + rSun.y*rSun.y + rSun.z*rSun.z);
+  const uSun = { x: rSun.x/sunMag, y: rSun.y/sunMag, z: rSun.z/sunMag };
+  const proj = rSat.x*uSun.x + rSat.y*uSun.y + rSat.z*uSun.z;
+  if (proj > 0) return true; // sunward side of Earth: always lit
+  const satMag2 = rSat.x*rSat.x + rSat.y*rSat.y + rSat.z*rSat.z;
+  const perp2 = satMag2 - proj*proj;
+  return perp2 > EARTH_RADIUS_KM*EARTH_RADIUS_KM; // outside the shadow cylinder: lit
+}
+
 function buildTools(toolLog){
   return [
     {
@@ -2601,6 +2624,25 @@ function buildTools(toolLog){
             elevationDeg: +v.elevationDeg.toFixed(1), azimuthDeg: +v.azimuthDeg.toFixed(1),
             rangeKm: +v.rangeKm.toFixed(1),
           })),
+        };
+      },
+    },
+    {
+      name: 'checkIllumination',
+      description: "Whether a tracked object is currently sunlit or in Earth's shadow (eclipse), using a standard cylindrical-shadow approximation — not a precision penumbra/umbra prediction.",
+      inputSchema: { type:'object', properties: { name: { type:'string' } }, required:['name'] },
+      execute: (input) => {
+        toolLog.push('checkIllumination');
+        if (!input || !input.name) return { error: 'name is required' };
+        const r = findObject(input.name);
+        if (r.error) return { error: r.error };
+        if (r.ambiguous) return { error: 'name matches more than one tracked object — ask the operator which one', matches: r.ambiguous };
+        const sunlit = isSunlit(r.object, new Date());
+        if (sunlit === null) return { error: 'could not propagate this object right now' };
+        return {
+          object: r.object.name,
+          illumination: sunlit ? 'sunlit' : "eclipse (Earth's shadow)",
+          caveat: 'Cylindrical Earth-shadow approximation — ignores penumbra and Earth oblateness.',
         };
       },
     },
