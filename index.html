@@ -1384,8 +1384,8 @@ const COASTLINES=[
 const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, a space domain awareness common operating picture. "
   + "You have tool access to the live tracked-object catalog (real TLEs propagated with SGP4) and the most recent conjunction "
   + "screening results. Ground every factual claim in tool output rather than guessing — call queryObjects, getObjectDetail, "
-  + "listCloseApproaches, topConcerns, catalogSummary, focusObject, nextPass, overheadNow, checkIllumination, estimateDecayRisk, or "
-  + "compareObjects as needed before answering. "
+  + "listCloseApproaches, topConcerns, catalogSummary, focusObject, nextPass, overheadNow, checkIllumination, estimateDecayRisk, "
+  + "compareObjects, or listRecentManeuvers as needed before answering. "
   + "Speak like a space operations analyst: concise, precise units (km, deg, km/s), operator terminology. If asked about collision "
   + "risk, be clear this is a simplified geometric proximity screening with no covariance data, not an operational probability of "
   + "collision. If asked about orbital decay or re-entry timing, be equally clear that estimateDecayRisk is a rough heuristic from "
@@ -1396,6 +1396,13 @@ const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, 
 // Set after deploying worker/index.html to Cloudflare Workers, e.g. 'https://northern-shrike-copilot.<subdomain>.workers.dev'.
 // Left blank, Copilot simply reports itself unavailable outside the Claude Artifact viewer.
 const COPILOT_WORKER_URL = 'https://northern-shrike-copilot.mgdufour.workers.dev';
+
+// Set after deploying worker/catalog-refresh (see its DEPLOY.md), e.g.
+// 'https://northern-shrike-catalog-refresh.<subdomain>.workers.dev'. Left blank, the
+// catalog stays the static embedded RAW_OBJECTS snapshot exactly as it is today —
+// resolveCatalogData() below never even attempts a fetch with this unset, same
+// inert-until-configured pattern as COPILOT_WORKER_URL and the space-weather live fetch.
+const CATALOG_WORKER_URL = '';
 
 const state = {
   objects: [],
@@ -1456,9 +1463,10 @@ function classifyRegime(meanAltKm, ecc, inclDeg){
   return 'HEO/Other';
 }
 
-function buildCatalog(){
+function buildCatalog(rawObjects){
+  rawObjects = rawObjects || RAW_OBJECTS;
   const list = [];
-  for (const raw of RAW_OBJECTS){
+  for (const raw of rawObjects){
     if (!raw || !raw.l1 || !raw.l2) continue;
     let satrec;
     try { satrec = satellite.twoline2satrec(raw.l1, raw.l2); } catch(e){ continue; }
@@ -1486,6 +1494,40 @@ function buildCatalog(){
     });
   }
   return list;
+}
+
+// Human-readable, on-page status for whether the catalog is live or the static
+// fallback (and why) — same reasoning as SPACE_WEATHER_STATUS: checkable by just
+// looking at the page, no devtools required.
+let CATALOG_STATUS = 'static snapshot';
+
+// Resolves the raw-object array to build the catalog from: the live catalog-refresh
+// Worker's /catalog endpoint if CATALOG_WORKER_URL is set and the response validates,
+// otherwise the static embedded RAW_OBJECTS snapshot exactly as today. Never throws —
+// any failure (network, CORS, unexpected shape) falls back to RAW_OBJECTS silently,
+// same defensive pattern as loadLiveSpaceWeather(). Resolved once, before the rest of
+// init() builds the UI from it, rather than swapping state.objects live under an
+// already-rendered page.
+async function resolveCatalogData(){
+  if (!CATALOG_WORKER_URL) return RAW_OBJECTS;
+  try{
+    const resp = await fetch(CATALOG_WORKER_URL + '/catalog');
+    if (!resp.ok) throw new Error('non-200 response from catalog-refresh worker');
+    const data = await resp.json();
+    if (!Array.isArray(data) || !data.length) throw new Error('unexpected /catalog response shape');
+    for (const rec of data.slice(0, 5)){
+      if (typeof rec.n !== 'string' || typeof rec.l1 !== 'string' || typeof rec.l2 !== 'string'){
+        throw new Error('unexpected /catalog record shape');
+      }
+    }
+    CATALOG_STATUS = 'live (' + data.length + ' objects)';
+    console.info('[catalog] live catalog-refresh data loaded: ' + data.length + ' objects.');
+    return data;
+  } catch(e){
+    CATALOG_STATUS = 'static snapshot — live fetch failed: ' + (e && e.message);
+    console.warn('[catalog] live fetch failed, using the static snapshot:', e && e.message);
+    return RAW_OBJECTS;
+  }
 }
 
 function propagateOne(o, date){
@@ -1590,7 +1632,7 @@ function computeStats(){
     else if (o.regime==='GEO') geo++; else heo++;
   }
   document.getElementById('statTotal').textContent = state.objects.length;
-  document.getElementById('regimeSummary').textContent = leo+' LEO · '+meo+' MEO · '+geo+' GEO · '+heo+' HEO/Other';
+  document.getElementById('regimeSummary').textContent = leo+' LEO · '+meo+' MEO · '+geo+' GEO · '+heo+' HEO/Other · catalog: '+CATALOG_STATUS;
 }
 
 /* ---------------- table ---------------- */
@@ -2777,6 +2819,27 @@ function buildTools(toolLog){
       },
     },
     {
+      name: 'listRecentManeuvers',
+      description: "Lists tracked objects whose orbital inclination jumped between consecutive TLE observations in the last N days — a signal for a possible maneuver, since ordinary atmospheric drag changes an object's mean motion but not its inclination. Requires the catalog-refresh Worker to be deployed and configured; reports that plainly if it isn't rather than guessing.",
+      inputSchema: { type:'object', properties: { days: { type:'number' } } },
+      execute: async (input) => {
+        toolLog.push('listRecentManeuvers');
+        if (!CATALOG_WORKER_URL){
+          return { status: 'not configured — the catalog-refresh Worker has not been deployed yet, so no maneuver history is available.' };
+        }
+        const days = Math.min(Math.max((input && input.days) || 7, 1), 90);
+        try{
+          const resp = await fetch(CATALOG_WORKER_URL + '/maneuvers?days=' + days);
+          if (!resp.ok) return { error: 'catalog-refresh worker returned ' + resp.status };
+          const data = await resp.json();
+          if (!Array.isArray(data)) return { error: 'unexpected /maneuvers response shape' };
+          return { lookbackDays: days, flaggedCount: data.length, flagged: data.slice(0, 20) };
+        } catch(e){
+          return { error: 'could not reach the catalog-refresh worker: ' + (e && e.message) };
+        }
+      },
+    },
+    {
       name: 'catalogSummary',
       description: 'Get catalog totals by category, orbital regime, and owner/operator nation, plus current mission time.',
       inputSchema: { type:'object', properties: {} },
@@ -3138,10 +3201,10 @@ function startAnimationLoop(){
   }, 1000);
 }
 
-function init(){
+async function init(){
   canvas = document.getElementById('mapCanvas');
   ctx = canvas.getContext('2d');
-  state.objects = buildCatalog();
+  state.objects = buildCatalog(await resolveCatalogData());
   for (const o of state.objects){ if (isCanadianGovSat(o.name)) state.pinnedIds.add(o.id); }
   buildFilters();
   buildOwnerFilters();
