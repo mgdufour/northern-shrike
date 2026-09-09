@@ -2121,6 +2121,25 @@ function renderGlobe(){
 /* ---------------- conjunction screening ---------------- */
 
 const CO_LOCATED_MAX_KM = 2;
+const COMPLEX_INCL_TOL_DEG = 2;
+const COMPLEX_RAAN_TOL_DEG = 10;
+
+function angleDiffDeg(a, b){
+  const d = Math.abs(a-b) % 360;
+  return d > 180 ? 360-d : d;
+}
+
+// Two objects sharing an orbital plane (inclination + RAAN, within a tolerance loose
+// enough to absorb TLE noise) are treated as one physical complex — e.g. ISS plus its
+// currently-docked vehicles. This is checked instead of relying on propagated position,
+// because sample TLEs for independently-published "docked" objects can carry several
+// degrees of RAAN mismatch that no instantaneous distance check can see past, even
+// though anything actually docked is definitionally in the same orbital plane.
+function isSameComplex(a, b){
+  return a.category === 'station' && b.category === 'station'
+    && Math.abs(a.inclDeg - b.inclDeg) < COMPLEX_INCL_TOL_DEG
+    && angleDiffDeg(a.raanDeg, b.raanDeg) < COMPLEX_RAAN_TOL_DEG;
+}
 
 function runScreening(lookaheadHours){
   const btn = document.getElementById('runScreeningBtn');
@@ -2175,10 +2194,10 @@ function runScreening(lookaheadHours){
             if (d2 < minD2){ minD2 = d2; minS = s; }
           }
           if (minD2 < thr2){
-            // A pair already within CO_LOCATED_MAX_KM right now is treated as one physical
-            // structure (e.g. ISS and a docked vehicle), not a real conjunction — even if their
-            // independently-published TLEs drift further apart later in the propagation window.
-            if (startD2 < CO_LOCATED_MAX_KM*CO_LOCATED_MAX_KM){
+            // A pair already within CO_LOCATED_MAX_KM right now, or sharing an orbital plane
+            // (isSameComplex), is treated as one physical structure — e.g. ISS and a docked
+            // vehicle — not a real conjunction.
+            if (startD2 < CO_LOCATED_MAX_KM*CO_LOCATED_MAX_KM || isSameComplex(arr[i], arr[j])){
               coLocatedExcluded++;
               continue;
             }
