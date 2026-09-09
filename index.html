@@ -2301,11 +2301,19 @@ function renderConjunctions(){
 
 /* ---------------- copilot ---------------- */
 
+// Resolves a name/NORAD-ID query to one tracked object. Returns { object } on a clean
+// match, { ambiguous: [names] } when a partial name matches more than one object (so
+// callers can ask the operator to disambiguate instead of guessing), or { error }.
 function findObject(query){
-  const q = String(query).toLowerCase();
-  return state.objects.find(x=>x.name.toLowerCase()===q)
-    || state.objects.find(x=>x.noradId===String(query))
-    || state.objects.find(x=>x.name.toLowerCase().includes(q));
+  const q = String(query).trim().toLowerCase();
+  const exact = state.objects.find(x=>x.name.toLowerCase()===q);
+  if (exact) return { object: exact };
+  const byId = state.objects.find(x=>x.noradId===String(query).trim());
+  if (byId) return { object: byId };
+  const partial = state.objects.filter(x=>x.name.toLowerCase().includes(q));
+  if (partial.length === 1) return { object: partial[0] };
+  if (partial.length > 1) return { ambiguous: partial.slice(0,10).map(x=>x.name) };
+  return { error: 'no matching tracked object' };
 }
 
 function buildTools(toolLog){
@@ -2346,8 +2354,10 @@ function buildTools(toolLog){
       execute: (input) => {
         toolLog.push('getObjectDetail');
         if (!input || !input.name) return { error: 'name is required' };
-        const o = findObject(input.name);
-        if (!o) return { error: 'no matching tracked object' };
+        const r = findObject(input.name);
+        if (r.error) return { error: r.error };
+        if (r.ambiguous) return { error: 'name matches more than one tracked object — ask the operator which one', matches: r.ambiguous };
+        const o = r.object;
         return {
           name:o.name, category:o.category, regime:o.regime, noradId:o.noradId, owner:o.ownerBucket,
           tleEpochUtc: fmtUtc(o.epochDate),
@@ -2366,10 +2376,11 @@ function buildTools(toolLog){
       execute: (input) => {
         toolLog.push('focusObject');
         if (!input || !input.name) return { error: 'name is required' };
-        const o = findObject(input.name);
-        if (!o) return { error: 'no matching tracked object' };
-        selectObject(o.id);
-        return { focused: o.name, noradId: o.noradId };
+        const r = findObject(input.name);
+        if (r.error) return { error: r.error };
+        if (r.ambiguous) return { error: 'name matches more than one tracked object — ask the operator which one', matches: r.ambiguous };
+        selectObject(r.object.id);
+        return { focused: r.object.name, noradId: r.object.noradId };
       },
     },
     {
