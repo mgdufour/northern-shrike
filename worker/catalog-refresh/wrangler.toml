@@ -1,0 +1,16 @@
+# Reference only — DEPLOY.md walks through setting this Worker up entirely from the
+# Cloudflare dashboard (same paste-in-Quick-Edit flow used for the Copilot worker), no
+# wrangler CLI required. This file documents the exact bindings/settings those dashboard
+# steps produce, in case you ever want to switch to `wrangler deploy` instead.
+
+name = "northern-shrike-catalog-refresh"
+main = "index.js"
+compatibility_date = "2026-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "northern-shrike-catalog"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[triggers]
+crons = ["0 */6 * * *"]  # every 6 hours; adjust in the dashboard's Triggers tab
