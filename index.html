@@ -2302,8 +2302,10 @@ function renderConjunctions(){
 /* ---------------- copilot ---------------- */
 
 // Resolves a name/NORAD-ID query to one tracked object. Returns { object } on a clean
-// match, { ambiguous: [names] } when a partial name matches more than one object (so
-// callers can ask the operator to disambiguate instead of guessing), or { error }.
+// match, { ambiguous: [{name, noradId}] } when a partial name matches more than one
+// object (so callers can ask the operator to disambiguate instead of guessing — the
+// NORAD ID is included because many debris fragments share an identical display name),
+// or { error }.
 function findObject(query){
   const q = String(query).trim().toLowerCase();
   const exact = state.objects.find(x=>x.name.toLowerCase()===q);
@@ -2312,7 +2314,7 @@ function findObject(query){
   if (byId) return { object: byId };
   const partial = state.objects.filter(x=>x.name.toLowerCase().includes(q));
   if (partial.length === 1) return { object: partial[0] };
-  if (partial.length > 1) return { ambiguous: partial.slice(0,10).map(x=>x.name) };
+  if (partial.length > 1) return { ambiguous: partial.slice(0,10).map(x=>({name:x.name, noradId:x.noradId})) };
   return { error: 'no matching tracked object' };
 }
 
