@@ -200,6 +200,14 @@ export default {
         const { results } = await env.DB.prepare('SELECT * FROM ingest_runs ORDER BY started_at DESC LIMIT 5').all();
         return new Response(JSON.stringify(results), { headers });
       }
+      if (url.pathname === '/trigger-ingest'){
+        // Manual escape hatch for testing: fires the same ingest the Cron Trigger runs,
+        // on demand, since the dashboard doesn't reliably expose a "fire now" button for
+        // Cron Triggers across all account/dashboard versions. Not authenticated — same
+        // posture as /catalog and /maneuvers (public reads); this just runs an ingest
+        // against public CelesTrak data into your own D1, nothing sensitive to protect.
+        return new Response(JSON.stringify(await runIngest(env)), { headers });
+      }
       return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers });
     } catch(e){
       return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
