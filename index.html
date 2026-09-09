@@ -1105,6 +1105,10 @@ const SPACE_WEATHER_FALLBACK = {"updatedUtc":"2026-09-08 19:11:00Z","g":{"scale"
 // Overwritten in place by loadLiveSpaceWeather() if a live NOAA SWPC read succeeds and
 // validates; renderSpaceWeather() always reads this variable, never the fallback directly.
 let SPACE_WEATHER = SPACE_WEATHER_FALLBACK;
+// Human-readable, on-page status for whether SPACE_WEATHER is live or the static
+// fallback (and why) — shown directly in the panel so this is checkable on a phone
+// with no devtools access, not just via console.
+let SPACE_WEATHER_STATUS = 'static snapshot';
 
 const COASTLINES=[
 [-163.71,-78.60,-163.11,-78.22,-161.25,-78.38,-160.25,-78.69,-159.48,-79.05,-159.21,-79.50,-161.13,-79.63,-162.44,-79.28,-163.03,-78.93,-163.07,-78.87,-163.71,-78.60]
@@ -1697,7 +1701,7 @@ function renderSpaceWeather(){
     + '<div class="sw-row"><span>Planetary Kp</span><b>'+w.kp.toFixed(1)+' &middot; '+kpWord(w.kp)+'</b></div>'
     + '<div class="sw-row"><span>Current X-ray (GOES)</span><b>'+esc(w.flareClass)+'</b></div>'
     + '<div class="sw-row"><span>24h peak flare</span><b>'+esc(w.flareMaxClass)+'</b></div>'
-    + '<div class="sw-updated">NOAA SWPC &middot; updated '+esc(w.updatedUtc)+'</div>';
+    + '<div class="sw-updated">NOAA SWPC &middot; '+esc(SPACE_WEATHER_STATUS)+' &middot; updated '+esc(w.updatedUtc)+'</div>';
 }
 
 // Attempts to replace the baked-in space-weather snapshot with a live read from NOAA
@@ -1738,9 +1742,12 @@ async function loadLiveSpaceWeather(){
       flareMaxClass: SPACE_WEATHER_FALLBACK.flareMaxClass,
       flareMaxTimeUtc: SPACE_WEATHER_FALLBACK.flareMaxTimeUtc,
     };
+    SPACE_WEATHER_STATUS = 'live (G/S/R + Kp)';
     renderSpaceWeather();
     console.info('[space weather] live NOAA SWPC G/S/R + Kp loaded; flare-class fields are still the static snapshot.');
   } catch(e){
+    SPACE_WEATHER_STATUS = 'static snapshot — live fetch failed: ' + (e && e.message);
+    renderSpaceWeather();
     console.warn('[space weather] live fetch failed, staying on the static snapshot:', e && e.message);
   }
 }
