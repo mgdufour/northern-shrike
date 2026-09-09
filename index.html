@@ -1376,11 +1376,13 @@ const COASTLINES=[
 const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, a space domain awareness common operating picture. "
   + "You have tool access to the live tracked-object catalog (real TLEs propagated with SGP4) and the most recent conjunction "
   + "screening results. Ground every factual claim in tool output rather than guessing — call queryObjects, getObjectDetail, "
-  + "listCloseApproaches, catalogSummary, or focusObject as needed before answering. Speak like a space operations analyst: concise, "
-  + "precise units (km, deg, km/s), operator terminology. If asked about collision risk, be clear this is a simplified geometric "
-  + "proximity screening with no covariance data, not an operational probability of collision. If tool data doesn't cover the "
-  + "question, say so plainly instead of speculating. When the operator asks to see, show, or focus on a specific object, call "
-  + "focusObject in addition to answering, so the map reflects it.";
+  + "listCloseApproaches, catalogSummary, focusObject, nextPass, estimateDecayRisk, or compareObjects as needed before answering. "
+  + "Speak like a space operations analyst: concise, precise units (km, deg, km/s), operator terminology. If asked about collision "
+  + "risk, be clear this is a simplified geometric proximity screening with no covariance data, not an operational probability of "
+  + "collision. If asked about orbital decay or re-entry timing, be equally clear that estimateDecayRisk is a rough heuristic from "
+  + "perigee and drag term only, not an atmospheric-density-modeled prediction. If tool data doesn't cover the question, say so "
+  + "plainly instead of speculating. When the operator asks to see, show, or focus on a specific object, call focusObject in "
+  + "addition to answering, so the map reflects it. nextPass requires an observer location — if the operator doesn't give one, ask.";
 
 // Set after deploying worker/index.html to Cloudflare Workers, e.g. 'https://northern-shrike-copilot.<subdomain>.workers.dev'.
 // Left blank, Copilot simply reports itself unavailable outside the Claude Artifact viewer.
@@ -2340,6 +2342,46 @@ function findObject(query){
   return { error: 'no matching tracked object' };
 }
 
+// Finds the next window during which a tracked object is above the local horizon
+// (elevation > 0°) for an observer at the given geodetic location, via topocentric
+// look-angle geometry (satellite.js ecfToLookAngles) sampled once per minute out to
+// withinHours ahead. One-minute resolution trades precision a real ground-station
+// scheduler would want for a simple, fast scan — plenty for an operator-facing estimate.
+function computeNextPass(o, latDeg, lonDeg, withinHours){
+  const observerGd = {
+    longitude: satellite.degreesToRadians(lonDeg),
+    latitude: satellite.degreesToRadians(latDeg),
+    height: 0.05,
+  };
+  const stepSec = 60;
+  const totalSteps = Math.floor(withinHours*3600/stepSec);
+  const now = new Date();
+  let inPass = false, currentlyVisible = false;
+  let riseDate = null, peakDate = null, peakElDeg = -90, setDate = null;
+  for (let s=0; s<=totalSteps; s++){
+    const t = new Date(now.getTime() + s*stepSec*1000);
+    const pv = satellite.propagate(o.satrec, t);
+    if (!pv || !pv.position || typeof pv.position === 'boolean') continue;
+    const gmst = satellite.gstime(t);
+    const ecf = satellite.eciToEcf(pv.position, gmst);
+    const look = satellite.ecfToLookAngles(observerGd, ecf);
+    const elDeg = look.elevation * 180/Math.PI;
+    if (elDeg > 0){
+      if (!inPass){
+        inPass = true; riseDate = t; peakDate = t; peakElDeg = elDeg;
+        if (s === 0) currentlyVisible = true;
+      } else if (elDeg > peakElDeg){
+        peakElDeg = elDeg; peakDate = t;
+      }
+    } else if (inPass){
+      setDate = t;
+      break;
+    }
+  }
+  if (!inPass) return null;
+  return { currentlyVisible, riseDate, peakDate, peakElDeg, setDate };
+}
+
 function buildTools(toolLog){
   return [
     {
@@ -2405,6 +2447,80 @@ function buildTools(toolLog){
         if (r.ambiguous) return { error: 'name matches more than one tracked object — ask the operator which one', matches: r.ambiguous };
         selectObject(r.object.id);
         return { focused: r.object.name, noradId: r.object.noradId };
+      },
+    },
+    {
+      name: 'nextPass',
+      description: 'Predict the next time a tracked object rises above the local horizon (elevation > 0°) for an observer at a given latitude/longitude, with peak elevation and set time. Looks up to 48 hours ahead using the live SGP4 propagation — one-minute resolution, not a precision ground-station schedule.',
+      inputSchema: { type:'object', properties: {
+        name: { type:'string' },
+        observerLatDeg: { type:'number', description: 'Observer latitude in degrees, -90 to 90.' },
+        observerLonDeg: { type:'number', description: 'Observer longitude in degrees, -180 to 180.' },
+      }, required:['name','observerLatDeg','observerLonDeg'] },
+      execute: (input) => {
+        toolLog.push('nextPass');
+        if (!input || !input.name) return { error: 'name is required' };
+        if (typeof input.observerLatDeg !== 'number' || typeof input.observerLonDeg !== 'number'){
+          return { error: 'observerLatDeg and observerLonDeg are required' };
+        }
+        const r = findObject(input.name);
+        if (r.error) return { error: r.error };
+        if (r.ambiguous) return { error: 'name matches more than one tracked object — ask the operator which one', matches: r.ambiguous };
+        const pass = computeNextPass(r.object, input.observerLatDeg, input.observerLonDeg, 48);
+        if (!pass) return { status: 'no pass above the local horizon found in the next 48 hours at that location' };
+        return {
+          object: r.object.name,
+          currentlyVisible: pass.currentlyVisible,
+          riseUtc: fmtUtc(pass.riseDate),
+          peakUtc: fmtUtc(pass.peakDate),
+          peakElevationDeg: +pass.peakElDeg.toFixed(1),
+          setUtc: pass.setDate ? fmtUtc(pass.setDate) : null,
+        };
+      },
+    },
+    {
+      name: 'estimateDecayRisk',
+      description: 'Rough qualitative orbital-decay read for one tracked object, from its current perigee altitude and its TLE drag term (BSTAR). This is a heuristic for situational awareness only — not a NORAD/Space-Track decay prediction, which requires atmospheric density modeling this tool does not do.',
+      inputSchema: { type:'object', properties: { name: { type:'string' } }, required:['name'] },
+      execute: (input) => {
+        toolLog.push('estimateDecayRisk');
+        if (!input || !input.name) return { error: 'name is required' };
+        const r = findObject(input.name);
+        if (r.error) return { error: r.error };
+        if (r.ambiguous) return { error: 'name matches more than one tracked object — ask the operator which one', matches: r.ambiguous };
+        const o = r.object;
+        const bstar = o.satrec.bstar;
+        let risk;
+        if (o.perigeeKm < 200) risk = 'very high — perigee under 200 km, atmospheric drag dominant, likely days to weeks';
+        else if (o.perigeeKm < 400 && bstar > 0.0001) risk = 'elevated — low perigee with a non-trivial drag term, plausible months-scale decay';
+        else if (o.perigeeKm < 600) risk = 'low — perigee within measurable-drag range, but likely years-scale absent maneuvers';
+        else risk = 'negligible — perigee high enough that drag is not a meaningful factor over any relevant planning horizon';
+        return {
+          object: o.name, perigeeAltKm: +o.perigeeKm.toFixed(1), bstar: +bstar.toFixed(6),
+          qualitativeRisk: risk,
+          caveat: 'Heuristic from perigee altitude and BSTAR only — not an atmospheric-density-modeled decay prediction.',
+        };
+      },
+    },
+    {
+      name: 'compareObjects',
+      description: 'Side-by-side orbital elements and current state for two tracked objects, by name or NORAD ID.',
+      inputSchema: { type:'object', properties: { nameA: { type:'string' }, nameB: { type:'string' } }, required:['nameA','nameB'] },
+      execute: (input) => {
+        toolLog.push('compareObjects');
+        if (!input || !input.nameA || !input.nameB) return { error: 'nameA and nameB are required' };
+        const summarize = (query) => {
+          const r = findObject(query);
+          if (r.error) return { error: r.error };
+          if (r.ambiguous) return { error: 'name matches more than one tracked object — ask the operator which one', matches: r.ambiguous };
+          const o = r.object;
+          return {
+            name:o.name, category:o.category, regime:o.regime, noradId:o.noradId, owner:o.ownerBucket,
+            altitudeKm: Math.round(o.meanAltKm), inclinationDeg: +o.inclDeg.toFixed(2),
+            eccentricity: +o.ecc.toFixed(5), periodMin: +o.periodMin.toFixed(2), raanDeg: +o.raanDeg.toFixed(2),
+          };
+        };
+        return { a: summarize(input.nameA), b: summarize(input.nameB) };
       },
     },
     {
