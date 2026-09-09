@@ -511,6 +511,7 @@ a{color:var(--accent);}
           </select>
           <button class="btn" id="runScreeningBtn">Run Screening</button>
           <button class="btn" id="toggleThresholdsBtn" style="background:transparent;">Thresholds</button>
+          <button class="btn" id="exportConjCsvBtn" style="background:transparent;">Export CSV</button>
           <span class="conj-note">Simplified geometric screening (no covariance) &middot; not an operational Pc / CDM</span>
         </div>
         <div class="conj-thresholds" id="conjThresholds">
@@ -2391,6 +2392,41 @@ function renderConjunctions(){
     + renderBucket('monitor', 'MONITOR &middot; &ge;15 km', monitor);
 }
 
+function csvCell(value){
+  const s = String(value);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function toCsv(header, rows){
+  return [header, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n');
+}
+function downloadTextFile(filename, text, mime){
+  const blob = new Blob([text], { type: (mime || 'text/csv') + ';charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+function timestampForFilename(){
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function exportConjunctionsCsv(){
+  const c = state.conjunctions;
+  if (!c || !c.results.length){
+    alert('No screening results to export yet — run screening first.');
+    return;
+  }
+  const header = ['ObjectA','ObjectB','Regime','MissDistanceKm','ClosingSpeedKmS','TimeOfClosestApproachUtc','InvolvesCanadianAsset'];
+  const rows = c.results.map(r => [
+    r.aName, r.bName, r.regime, r.missKm.toFixed(2), r.closingSpeedKmS.toFixed(2),
+    fmtUtc(r.tcaDate), (r.aCanadian || r.bCanadian) ? 'yes' : 'no',
+  ]);
+  downloadTextFile('northern-shrike-conjunctions-' + timestampForFilename() + '.csv', toCsv(header, rows));
+}
+
 /* ---------------- copilot ---------------- */
 
 // Resolves a name/NORAD-ID query to one tracked object. Returns { object } on a clean
@@ -3018,6 +3054,7 @@ function wireEvents(){
   const thrToggle = document.getElementById('toggleThresholdsBtn');
   const thrPanel = document.getElementById('conjThresholds');
   thrToggle.addEventListener('click', () => thrPanel.classList.toggle('open'));
+  document.getElementById('exportConjCsvBtn').addEventListener('click', exportConjunctionsCsv);
   const thrMap = { thrLEO:'LEO', thrMEO:'MEO', thrGEO:'GEO', thrHEO:'HEO/Other' };
   Object.keys(thrMap).forEach(id => {
     document.getElementById(id).addEventListener('change', e => {
