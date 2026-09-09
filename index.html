@@ -2167,6 +2167,7 @@ function runScreening(lookaheadHours){
       const m = arr.length;
       if (m < 2) continue;
       const px = new Float32Array(m*steps), py = new Float32Array(m*steps), pz = new Float32Array(m*steps);
+      const vx = new Float32Array(m*steps), vy = new Float32Array(m*steps), vz = new Float32Array(m*steps);
       const valid = new Uint8Array(m);
       for (let i=0;i<m;i++){
         const satrec = arr[i].satrec;
@@ -2177,6 +2178,7 @@ function runScreening(lookaheadHours){
           if (!pv || !pv.position || typeof pv.position === 'boolean'){ ok = false; break; }
           const idx = i*steps+s;
           px[idx]=pv.position.x; py[idx]=pv.position.y; pz[idx]=pv.position.z;
+          vx[idx]=pv.velocity.x; vy[idx]=pv.velocity.y; vz[idx]=pv.velocity.z;
         }
         valid[i] = ok ? 1 : 0;
       }
@@ -2203,10 +2205,13 @@ function runScreening(lookaheadHours){
               coLocatedExcluded++;
               continue;
             }
+            const ia = i*steps+minS, ib = j*steps+minS;
+            const dvx = vx[ia]-vx[ib], dvy = vy[ia]-vy[ib], dvz = vz[ia]-vz[ib];
+            const closingSpeedKmS = Math.sqrt(dvx*dvx+dvy*dvy+dvz*dvz);
             results.push({
               aName: arr[i].name, bName: arr[j].name, aId: arr[i].id, bId: arr[j].id,
               aCanadian: arr[i].isCanadian, bCanadian: arr[j].isCanadian,
-              regime, missKm: Math.sqrt(minD2),
+              regime, missKm: Math.sqrt(minD2), closingSpeedKmS,
               tcaDate: new Date(now.getTime() + minS*stepMinutes*60000),
             });
           }
@@ -2273,7 +2278,7 @@ function renderConjRow(r, opts){
     + '<div class="pair" title="'+esc(r.aName+' ↔ '+r.bName)+'">'+esc(r.aName)+(opts.canadianFlag && r.aCanadian?caTag:'')+' ↔ '+esc(r.bName)+(opts.canadianFlag && r.bCanadian?caTag:'')+'</div>'
     + '<div>'+r.regime+'</div>'
     + '<div class="miss '+riskClass+'">'+r.missKm.toFixed(2)+' km</div>'
-    + '<div class="tca" title="'+esc(fmtUtc(r.tcaDate))+' UTC">'+esc(formatCountdown(r.tcaDate, now))+'</div></div>';
+    + '<div class="tca" title="'+esc(fmtUtc(r.tcaDate)+' UTC · closing at '+r.closingSpeedKmS.toFixed(2)+' km/s')+'">'+esc(formatCountdown(r.tcaDate, now))+'</div></div>';
 }
 
 function renderBucket(id, label, rows, opts){
@@ -2537,7 +2542,8 @@ function buildTools(toolLog){
           totalCandidates: state.conjunctions.results.length,
           results: state.conjunctions.results.slice(0,lim).map(r => ({
             objectA:r.aName, objectB:r.bName, regime:r.regime,
-            missDistanceKm:+r.missKm.toFixed(2), timeOfClosestApproachUtc: fmtUtc(r.tcaDate),
+            missDistanceKm:+r.missKm.toFixed(2), closingSpeedKmS:+r.closingSpeedKmS.toFixed(2),
+            timeOfClosestApproachUtc: fmtUtc(r.tcaDate),
           })),
         };
       },
