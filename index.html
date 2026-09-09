@@ -1383,8 +1383,8 @@ const COASTLINES=[
 const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, a space domain awareness common operating picture. "
   + "You have tool access to the live tracked-object catalog (real TLEs propagated with SGP4) and the most recent conjunction "
   + "screening results. Ground every factual claim in tool output rather than guessing — call queryObjects, getObjectDetail, "
-  + "listCloseApproaches, catalogSummary, focusObject, nextPass, overheadNow, checkIllumination, estimateDecayRisk, or compareObjects "
-  + "as needed before answering. "
+  + "listCloseApproaches, topConcerns, catalogSummary, focusObject, nextPass, overheadNow, checkIllumination, estimateDecayRisk, or "
+  + "compareObjects as needed before answering. "
   + "Speak like a space operations analyst: concise, precise units (km, deg, km/s), operator terminology. If asked about collision "
   + "risk, be clear this is a simplified geometric proximity screening with no covariance data, not an operational probability of "
   + "collision. If asked about orbital decay or re-entry timing, be equally clear that estimateDecayRisk is a rough heuristic from "
@@ -2706,6 +2706,35 @@ function buildTools(toolLog){
           results: state.conjunctions.results.slice(0,lim).map(r => ({
             objectA:r.aName, objectB:r.bName, regime:r.regime,
             missDistanceKm:+r.missKm.toFixed(2), closingSpeedKmS:+r.closingSpeedKmS.toFixed(2),
+            timeOfClosestApproachUtc: fmtUtc(r.tcaDate),
+          })),
+        };
+      },
+    },
+    {
+      name: 'topConcerns',
+      description: 'Ranks the most recent conjunction screening results by overall concern, rather than raw miss-distance order: Canadian-asset involvement first, then risk band (critical/watch/monitor by miss distance), then closing speed within each band. Use this instead of listCloseApproaches when the operator asks what to prioritize or worry about most.',
+      inputSchema: { type:'object', properties: { limit: { type:'number' } } },
+      execute: (input) => {
+        toolLog.push('topConcerns');
+        if (!state.conjunctions) return { status: 'no screening has been run yet' };
+        const bandOf = (missKm) => missKm < 5 ? 0 : (missKm < 15 ? 1 : 2);
+        const bandLabel = (missKm) => missKm < 5 ? 'critical' : (missKm < 15 ? 'watch' : 'monitor');
+        const ranked = [...state.conjunctions.results].sort((a, b) => {
+          const ca = (a.aCanadian||a.bCanadian) ? 1 : 0, cb = (b.aCanadian||b.bCanadian) ? 1 : 0;
+          if (cb !== ca) return cb - ca;
+          const bandA = bandOf(a.missKm), bandB = bandOf(b.missKm);
+          if (bandA !== bandB) return bandA - bandB;
+          return b.closingSpeedKmS - a.closingSpeedKmS;
+        });
+        const lim = Math.min((input && input.limit) || 10, 40);
+        return {
+          totalCandidates: ranked.length,
+          returned: Math.min(lim, ranked.length),
+          results: ranked.slice(0, lim).map(r => ({
+            objectA: r.aName, objectB: r.bName, regime: r.regime, riskBand: bandLabel(r.missKm),
+            missDistanceKm: +r.missKm.toFixed(2), closingSpeedKmS: +r.closingSpeedKmS.toFixed(2),
+            involvesCanadianAsset: !!(r.aCanadian || r.bCanadian),
             timeOfClosestApproachUtc: fmtUtc(r.tcaDate),
           })),
         };
