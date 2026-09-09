@@ -2166,16 +2166,19 @@ function runScreening(lookaheadHours){
         for (let j=i+1;j<m;j++){
           if (!valid[j]) continue;
           pairsChecked++;
-          let minD2 = Infinity, minS = 0, maxD2 = 0;
+          let minD2 = Infinity, minS = 0, startD2 = 0;
           for (let s=0;s<steps;s++){
             const ia = i*steps+s, ib = j*steps+s;
             const dx = px[ia]-px[ib], dy = py[ia]-py[ib], dz = pz[ia]-pz[ib];
             const d2 = dx*dx+dy*dy+dz*dz;
+            if (s === 0) startD2 = d2;
             if (d2 < minD2){ minD2 = d2; minS = s; }
-            if (d2 > maxD2) maxD2 = d2;
           }
           if (minD2 < thr2){
-            if (maxD2 < CO_LOCATED_MAX_KM*CO_LOCATED_MAX_KM){
+            // A pair already within CO_LOCATED_MAX_KM right now is treated as one physical
+            // structure (e.g. ISS and a docked vehicle), not a real conjunction — even if their
+            // independently-published TLEs drift further apart later in the propagation window.
+            if (startD2 < CO_LOCATED_MAX_KM*CO_LOCATED_MAX_KM){
               coLocatedExcluded++;
               continue;
             }
