@@ -1383,7 +1383,7 @@ const COASTLINES=[
 const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, a space domain awareness common operating picture. "
   + "You have tool access to the live tracked-object catalog (real TLEs propagated with SGP4) and the most recent conjunction "
   + "screening results. Ground every factual claim in tool output rather than guessing — call queryObjects, getObjectDetail, "
-  + "listCloseApproaches, catalogSummary, focusObject, nextPass, estimateDecayRisk, or compareObjects as needed before answering. "
+  + "listCloseApproaches, catalogSummary, focusObject, nextPass, overheadNow, estimateDecayRisk, or compareObjects as needed before answering. "
   + "Speak like a space operations analyst: concise, precise units (km, deg, km/s), operator terminology. If asked about collision "
   + "risk, be clear this is a simplified geometric proximity screening with no covariance data, not an operational probability of "
   + "collision. If asked about orbital decay or re-entry timing, be equally clear that estimateDecayRisk is a rough heuristic from "
@@ -2414,12 +2414,26 @@ function findObject(query){
 // look-angle geometry (satellite.js ecfToLookAngles) sampled once per minute out to
 // withinHours ahead. One-minute resolution trades precision a real ground-station
 // scheduler would want for a simple, fast scan — plenty for an operator-facing estimate.
-function computeNextPass(o, latDeg, lonDeg, withinHours){
-  const observerGd = {
+function observerGeodetic(latDeg, lonDeg){
+  return {
     longitude: satellite.degreesToRadians(lonDeg),
     latitude: satellite.degreesToRadians(latDeg),
     height: 0.05,
   };
+}
+
+// Topocentric look-angles (elevation/azimuth/range) for one object at one instant, or
+// null if the object's satrec fails to propagate at that time.
+function lookAnglesAt(o, observerGd, t){
+  const pv = satellite.propagate(o.satrec, t);
+  if (!pv || !pv.position || typeof pv.position === 'boolean') return null;
+  const gmst = satellite.gstime(t);
+  const ecf = satellite.eciToEcf(pv.position, gmst);
+  return satellite.ecfToLookAngles(observerGd, ecf);
+}
+
+function computeNextPass(o, latDeg, lonDeg, withinHours){
+  const observerGd = observerGeodetic(latDeg, lonDeg);
   const stepSec = 60;
   const totalSteps = Math.floor(withinHours*3600/stepSec);
   const now = new Date();
@@ -2427,11 +2441,8 @@ function computeNextPass(o, latDeg, lonDeg, withinHours){
   let riseDate = null, peakDate = null, peakElDeg = -90, setDate = null;
   for (let s=0; s<=totalSteps; s++){
     const t = new Date(now.getTime() + s*stepSec*1000);
-    const pv = satellite.propagate(o.satrec, t);
-    if (!pv || !pv.position || typeof pv.position === 'boolean') continue;
-    const gmst = satellite.gstime(t);
-    const ecf = satellite.eciToEcf(pv.position, gmst);
-    const look = satellite.ecfToLookAngles(observerGd, ecf);
+    const look = lookAnglesAt(o, observerGd, t);
+    if (!look) continue;
     const elDeg = look.elevation * 180/Math.PI;
     if (elDeg > 0){
       if (!inPass){
@@ -2447,6 +2458,28 @@ function computeNextPass(o, latDeg, lonDeg, withinHours){
   }
   if (!inPass) return null;
   return { currentlyVisible, riseDate, peakDate, peakElDeg, setDate };
+}
+
+// Every currently-visible (elevation > 0°) tracked object for an observer at the given
+// geodetic location, right now, sorted highest-elevation first.
+function computeOverheadNow(latDeg, lonDeg){
+  const observerGd = observerGeodetic(latDeg, lonDeg);
+  const now = new Date();
+  const visible = [];
+  for (const o of state.objects){
+    const look = lookAnglesAt(o, observerGd, now);
+    if (!look) continue;
+    const elevationDeg = look.elevation * 180/Math.PI;
+    if (elevationDeg <= 0) continue;
+    visible.push({
+      object: o,
+      elevationDeg,
+      azimuthDeg: ((look.azimuth * 180/Math.PI) % 360 + 360) % 360,
+      rangeKm: look.rangeSat,
+    });
+  }
+  visible.sort((a, b) => b.elevationDeg - a.elevationDeg);
+  return visible;
 }
 
 function buildTools(toolLog){
@@ -2542,6 +2575,32 @@ function buildTools(toolLog){
           peakUtc: fmtUtc(pass.peakDate),
           peakElevationDeg: +pass.peakElDeg.toFixed(1),
           setUtc: pass.setDate ? fmtUtc(pass.setDate) : null,
+        };
+      },
+    },
+    {
+      name: 'overheadNow',
+      description: 'List tracked objects currently above the local horizon (elevation > 0°) for an observer at a given latitude/longitude, right now, sorted highest-elevation first.',
+      inputSchema: { type:'object', properties: {
+        observerLatDeg: { type:'number', description: 'Observer latitude in degrees, -90 to 90.' },
+        observerLonDeg: { type:'number', description: 'Observer longitude in degrees, -180 to 180.' },
+        limit: { type:'number' },
+      }, required:['observerLatDeg','observerLonDeg'] },
+      execute: (input) => {
+        toolLog.push('overheadNow');
+        if (!input || typeof input.observerLatDeg !== 'number' || typeof input.observerLonDeg !== 'number'){
+          return { error: 'observerLatDeg and observerLonDeg are required' };
+        }
+        const visible = computeOverheadNow(input.observerLatDeg, input.observerLonDeg);
+        const lim = Math.min((input && input.limit) || 15, 40);
+        return {
+          totalVisible: visible.length,
+          returned: Math.min(lim, visible.length),
+          objects: visible.slice(0, lim).map(v => ({
+            name: v.object.name, category: v.object.category,
+            elevationDeg: +v.elevationDeg.toFixed(1), azimuthDeg: +v.azimuthDeg.toFixed(1),
+            rangeKm: +v.rangeKm.toFixed(1),
+          })),
         };
       },
     },
