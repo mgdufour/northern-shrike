@@ -1732,8 +1732,15 @@ async function loadLiveSpaceWeather(){
     const g = parseScale(today.G), s = parseScale(today.S), r = parseScale(today.R);
 
     if (!Array.isArray(kpRows) || kpRows.length < 2) throw new Error('unexpected noaa-planetary-k-index.json shape');
-    const kp = Number(kpRows[kpRows.length - 1] && kpRows[kpRows.length - 1][1]);
-    if (!Number.isFinite(kp)) throw new Error('unexpected kp value');
+    // Scan backward from the most recent row for the first one whose Kp column parses as
+    // a finite number — the trailing rows can be forecast placeholders (null/blank) rather
+    // than an observed value, so taking the last row unconditionally is not reliable.
+    let kp = null;
+    for (let i = kpRows.length - 1; i >= 1; i--){
+      const candidate = Number(kpRows[i] && kpRows[i][1]);
+      if (Number.isFinite(candidate)){ kp = candidate; break; }
+    }
+    if (kp === null) throw new Error('unexpected kp value');
 
     SPACE_WEATHER = {
       updatedUtc: new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z'),
