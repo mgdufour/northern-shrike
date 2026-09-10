@@ -45,15 +45,37 @@ function parseInclinationDeg(line2){ return parseFloat(line2.slice(8, 16)); }
 function parseMeanMotion(line2){ return parseFloat(line2.slice(52, 63)); }
 function parseNoradId(line1){ return line1.slice(2, 7).trim(); }
 
-// Best-effort owner code from CelesTrak's own OWNER field if present; the frontend's
-// existing ownerBucketFor() does the real bucketing and already treats an unrecognized
-// code as OTHER, so a missing/unexpected value here degrades safely.
+// KNOWN LIMITATION: neither CelesTrak format (json or tle) carries an owner/nation
+// field at all, confirmed against real responses — so this always falls through to
+// 'OTHER' for live-fetched objects today. The frontend's ownerBucketFor() already
+// treats an unrecognized code as OTHER, so this degrades safely rather than breaking,
+// but the Owner/Operator filter won't usefully bucket live data by nation until this
+// is backed by a real NORAD-ID-to-country lookup (out of scope for the initial cut —
+// the static RAW_OBJECTS snapshot still has accurate owner codes, this only affects
+// objects sourced from the live catalog-refresh Worker).
 function guessOwnerCode(record){
   return typeof record.OWNER === 'string' && record.OWNER ? record.OWNER : 'OTHER';
 }
 
+// CelesTrak's FORMAT=tle response is plain text, three lines per object (name, then
+// the two TLE lines) with no separators between objects. Verified against a real
+// response, cross-checked line-by-line against the same object's FORMAT=json numbers
+// (inclination, RAAN, mean anomaly, mean motion, BSTAR all matched exactly) — FORMAT=json
+// turned out not to carry TLE_LINE1/TLE_LINE2 at all (it returns the orbital elements as
+// separate numeric fields instead), which is what made every record fail validation on
+// the first real run. Shaped to match what normalizeRecord() already expects, so nothing
+// downstream of this function needed to change.
+function parseTleText(text){
+  const lines = text.split('\n').map(l => l.replace(/\r$/, '')).filter(l => l.length > 0);
+  const records = [];
+  for (let i = 0; i + 2 < lines.length; i += 3){
+    records.push({ OBJECT_NAME: lines[i].trim(), TLE_LINE1: lines[i + 1], TLE_LINE2: lines[i + 2] });
+  }
+  return records;
+}
+
 async function fetchGroup(group){
-  const url = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=' + encodeURIComponent(group) + '&FORMAT=json';
+  const url = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=' + encodeURIComponent(group) + '&FORMAT=tle';
   // CelesTrak's own usage guidance asks API consumers to identify themselves via
   // User-Agent rather than send an anonymous/default one — a missing or generic UA is
   // a common reason a request gets rate-limited or blocked outright, which lines up
@@ -62,9 +84,8 @@ async function fetchGroup(group){
     headers: { 'User-Agent': 'northern-shrike-catalog-refresh/1.0 (+https://github.com/mgdufour/northern-shrike)' },
   });
   if (!resp.ok) throw new Error('CelesTrak returned ' + resp.status + ' for group ' + group);
-  const data = await resp.json();
-  if (!Array.isArray(data)) throw new Error('unexpected CelesTrak response shape for group ' + group);
-  return data;
+  const text = await resp.text();
+  return parseTleText(text);
 }
 
 // Validates and normalizes one CelesTrak GP JSON record. Returns null (never throws)
@@ -214,7 +235,7 @@ async function serveManeuvers(db, days){
 
 // Named exports exist only so a test harness can call these directly — Cloudflare
 // Workers only ever invoke the default export below, so this has no runtime effect.
-export { normalizeRecord, runIngest, serveCatalog, serveManeuvers };
+export { normalizeRecord, parseTleText, runIngest, serveCatalog, serveManeuvers };
 
 export default {
   async scheduled(event, env, ctx){
