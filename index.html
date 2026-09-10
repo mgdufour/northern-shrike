@@ -200,19 +200,22 @@ button{font-family:inherit;}
 }
 .ca-callout-count{color:var(--accent-2);font-weight:600;}
 
-/* ---- main grid ---- */
-.main{flex:1;display:grid;grid-template-columns:1fr;min-height:0;position:relative;}
+/* ---- main layout ----
+   Flex, not grid: colCenter (the map) is the one flexible item and just fills
+   whatever's left; colLeft/colRight are handled independently below rather than as
+   grid tracks, since one is an overlay drawer and the other is a permanently docked
+   column with its own show/hide toggle. */
+.main{flex:1;display:flex;min-height:0;position:relative;}
 .col{min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--line);}
 .col:last-child{border-right:none;}
+#colCenter{flex:1;min-width:0;}
 
-/* ---- edge drawers (Catalog Filters + Copilot) ----
-   The map is now the only column reserved in the grid (see .main above); Catalog
-   Filters and Copilot are the same #colLeft/#colRight elements as before, but instead
-   of sitting in grid tracks they're position:fixed panels parked just off-screen
-   (translateX past their own width) and slid into view over the map on demand — the
-   "browser tab that pops out and collapses over the content" pattern. Verified no
-   ancestor sets transform/filter/perspective, which would otherwise make position:fixed
-   resolve against that ancestor instead of the viewport. */
+/* ---- Catalog Filters: edge drawer ----
+   Position:fixed, parked just off-screen (translateX past its own width) and slid
+   into view over the map on demand — the "browser tab that pops out and collapses
+   over the content" pattern. Verified no ancestor sets transform/filter/perspective,
+   which would otherwise make position:fixed resolve against that ancestor instead of
+   the viewport. */
 #colLeft{
   position:fixed; left:0; top:52px; bottom:0; z-index:900;
   width:296px;
@@ -244,25 +247,24 @@ button{font-family:inherit;}
   box-shadow:var(--shadow); cursor:pointer;
 }
 .filters-fab:hover{color:var(--text);border-color:var(--accent-dim);}
-/* Copilot is one unified panel — composer glued to the bottom of the same box that
-   shows the conversation, like Claude/Copilot Chat/Cursor, rather than a separate
-   floating input detached from a response drawer elsewhere on screen. Collapsed, it's
-   just the composer row, docked flush to the bottom-right corner; sending or focusing
-   it reveals the log above the composer by growing upward to the same full height as
-   Catalog Filters' own drawer (top:52px, i.e. flush under the topbar). Flush edges, no
-   margin, no border-radius, and a plain border like #colLeft's — a docked panel that's
-   part of the workspace, not a floating card hovering over it (which is what the
-   corner-margin + rounded-card version from the previous iteration actually read as). */
+.filters-fab.right{left:auto;right:20px;display:none;}
+.filters-fab.right.show{display:flex;}
+
+/* ---- Copilot: permanently docked column ----
+   Visible all the time by default — a real flex column next to the map (colCenter
+   shrinks to make room, it doesn't get covered), composer glued to the bottom of the
+   same box as the conversation log, matching how Claude/Copilot Chat/Cursor keep
+   input and output in one panel. #copilotClose hides it (width collapses to 0) for
+   the rare case you want the full map back; #copilotReopenFab (bottom-right, only
+   shown while hidden) brings it back — same show/hide pattern as Catalog Filters,
+   just defaulting to shown instead of hidden. */
 #colRight{
-  position:fixed; right:0; bottom:0; z-index:999;
-  width:min(400px, calc(100vw - 40px));
-  height:58px;
-  background:var(--bg-panel); border:1px solid var(--line-strong);
-  box-shadow:var(--shadow);
+  flex:none; width:380px; min-width:380px;
+  border-left:1px solid var(--line);
   overflow:hidden;
-  transition:height .22s ease;
+  transition:width .2s ease, min-width .2s ease;
 }
-#colRight.open{height:calc(100vh - 52px);}
+#colRight.hidden{width:0; min-width:0; border-left:none;}
 .panel-head{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:10px 14px;border-bottom:1px solid var(--line);
@@ -460,20 +462,10 @@ button{font-family:inherit;}
 }
 .copilot-close:hover{color:var(--text);}
 
-/* Collapsed (#colRight without .open): only the composer is visible, so the panel
-   reads as a plain input row. Opening it reveals these three in their normal flex/
-   block layout — restored explicitly per element since .panel-head is a shared class
-   used elsewhere on the page and must not be affected outside this panel. */
-.copilot > .panel-head, .copilot > .copilot-log, .copilot > .suggest-row{display:none;}
-#colRight.open .copilot > .panel-head{display:flex;}
-#colRight.open .copilot > .copilot-log{display:flex;}
-#colRight.open .copilot > .suggest-row{display:flex;}
-
 .copilot-composer{
   display:flex; align-items:center; gap:8px; flex:none;
-  padding:10px 12px;
+  padding:10px 12px; border-top:1px solid var(--line);
 }
-#colRight.open .copilot-composer{border-top:1px solid var(--line);}
 .copilot-composer input{
   flex:1; border:none; background:none; outline:none;
   color:var(--text); font-family:var(--font-body); font-size:13px; padding:4px 2px;
@@ -626,6 +618,7 @@ a{color:var(--accent);}
 </div>
 
 <button class="filters-fab" id="filtersFab" type="button">Catalog Filters</button>
+<button class="filters-fab right" id="copilotReopenFab" type="button">Copilot</button>
 
 <script src="https://cdn.jsdelivr.net/npm/satellite.js@6.0.1/dist/satellite.min.js"></script>
 <script>
@@ -3120,18 +3113,19 @@ function syncViewUI(){
 
 function wireEvents(){
   // Catalog Filters is an edge drawer (position:fixed, slid off-screen via transform
-  // until opened) so the map can be full-width. Copilot is a single self-contained
-  // panel instead: #colRight IS the box (background/border/shadow live on it directly
-  // now, not on .copilot inside it), collapsed by default to just its composer row and
-  // growing upward in place via a height transition when opened — composer and
-  // conversation always in the same box, the way Claude/Copilot Chat/Cursor do it,
-  // rather than a separate floating input detached from a response panel elsewhere.
+  // until opened) so the map can be full-width. Copilot is a permanently docked column
+  // instead — visible all the time, composer glued to the bottom of the same box as
+  // the conversation, the way Claude/Copilot Chat/Cursor do it. #copilotClose is just
+  // an escape hatch for reclaiming full map width; copilotReopenFab (bottom-right,
+  // shown only while hidden) brings it back, mirroring Catalog Filters' own toggle.
   const colRight = document.getElementById('colRight');
-  const setCopilotPopped = (popped) => {
-    colRight.classList.toggle('open', popped);
+  const copilotReopenFab = document.getElementById('copilotReopenFab');
+  const setCopilotHidden = (hidden) => {
+    colRight.classList.toggle('hidden', hidden);
+    copilotReopenFab.classList.toggle('show', hidden);
   };
-  document.getElementById('copilotClose').addEventListener('click', () => setCopilotPopped(false));
-  document.getElementById('copilotInput').addEventListener('focus', () => setCopilotPopped(true));
+  document.getElementById('copilotClose').addEventListener('click', () => setCopilotHidden(true));
+  copilotReopenFab.addEventListener('click', () => setCopilotHidden(false));
 
   const colLeft = document.getElementById('colLeft');
   const filtersFab = document.getElementById('filtersFab');
@@ -3206,12 +3200,12 @@ function wireEvents(){
     }
   });
   document.getElementById('copilotSend').addEventListener('click', () => {
-    setCopilotPopped(true);
+    setCopilotHidden(false);
     sendToCopilot(document.getElementById('copilotInput').value);
   });
   document.getElementById('copilotInput').addEventListener('keydown', e => {
     if (e.key === 'Enter'){
-      setCopilotPopped(true);
+      setCopilotHidden(false);
       sendToCopilot(document.getElementById('copilotInput').value);
     }
   });
