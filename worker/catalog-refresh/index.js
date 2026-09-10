@@ -54,7 +54,13 @@ function guessOwnerCode(record){
 
 async function fetchGroup(group){
   const url = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=' + encodeURIComponent(group) + '&FORMAT=json';
-  const resp = await fetch(url);
+  // CelesTrak's own usage guidance asks API consumers to identify themselves via
+  // User-Agent rather than send an anonymous/default one — a missing or generic UA is
+  // a common reason a request gets rate-limited or blocked outright, which lines up
+  // with the 403 seen on the heaviest-traffic group (starlink) in practice.
+  const resp = await fetch(url, {
+    headers: { 'User-Agent': 'northern-shrike-catalog-refresh/1.0 (+https://github.com/mgdufour/northern-shrike)' },
+  });
   if (!resp.ok) throw new Error('CelesTrak returned ' + resp.status + ' for group ' + group);
   const data = await resp.json();
   if (!Array.isArray(data)) throw new Error('unexpected CelesTrak response shape for group ' + group);
