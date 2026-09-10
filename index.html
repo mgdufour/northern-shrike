@@ -244,13 +244,22 @@ button{font-family:inherit;}
   box-shadow:var(--shadow); cursor:pointer;
 }
 .filters-fab:hover{color:var(--text);border-color:var(--accent-dim);}
+/* Copilot is one unified panel — composer glued to the bottom of the same box that
+   shows the conversation, like Claude/Copilot Chat/Cursor, rather than a separate
+   floating input detached from a response drawer elsewhere on screen. Collapsed, it's
+   just the composer row, anchored bottom-right; sending or focusing it grows the same
+   box upward in place to reveal the log above the composer. Height-based (not
+   slide-based) so it never has to dodge anything else on screen. */
 #colRight{
-  position:fixed; right:0; top:52px; bottom:0; z-index:999;
+  position:fixed; right:20px; bottom:20px; z-index:999;
   width:min(400px, calc(100vw - 40px));
-  transform:translateX(100%);
-  transition:transform .22s ease;
+  height:58px;
+  background:var(--bg-panel); border:1px solid var(--line-strong);
+  border-radius:16px; box-shadow:var(--shadow);
+  overflow:hidden;
+  transition:height .22s ease;
 }
-#colRight.open{transform:translateX(0);}
+#colRight.open{height:min(640px, calc(100vh - 100px));}
 .panel-head{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:10px 14px;border-bottom:1px solid var(--line);
@@ -440,8 +449,7 @@ button{font-family:inherit;}
 .kv.wide{grid-column:1/-1;}
 
 .copilot{
-  flex:1;display:flex;flex-direction:column;min-height:0;height:100%;
-  background:var(--bg-panel); box-shadow:var(--shadow);
+  display:flex;flex-direction:column;min-height:0;height:100%;
 }
 .copilot-close{
   background:none; border:none; color:var(--text-faint);
@@ -449,33 +457,26 @@ button{font-family:inherit;}
 }
 .copilot-close:hover{color:var(--text);}
 
-/* ---- Copilot composer bar ----
-   The primary entry point into Copilot: always visible, bottom-center, styled to read
-   as THE input on the page (like the Claude app's prompt box) rather than a button you
-   click to reveal one. Focusing or sending from it opens the Copilot drawer (#colRight),
-   which docks up to 400px wide on the right edge — wide enough to overlap a centered
-   640px bar on common laptop widths (~1366-1440px). The .drawer-open modifier (toggled
-   alongside #colRight's own .open class) shifts the bar left by half that reserved
-   width whenever the drawer is actually showing, so the one time you're most likely to
-   be typing — mid-conversation — is the one time collision was otherwise guaranteed. */
-.copilot-bar{
-  position:fixed; left:50%; bottom:22px; z-index:1000;
-  transform:translateX(-50%);
-  display:flex; align-items:center; gap:8px;
-  width:min(640px, calc(100vw - 300px));
-  padding:6px 6px 6px 18px; border-radius:999px;
-  background:var(--bg-panel); border:1px solid var(--line-strong);
-  box-shadow:var(--shadow);
-  transition:transform .22s ease, border-color .15s ease, box-shadow .15s ease;
+/* Collapsed (#colRight without .open): only the composer is visible, so the panel
+   reads as a plain input row. Opening it reveals these three in their normal flex/
+   block layout — restored explicitly per element since .panel-head is a shared class
+   used elsewhere on the page and must not be affected outside this panel. */
+.copilot > .panel-head, .copilot > .copilot-log, .copilot > .suggest-row{display:none;}
+#colRight.open .copilot > .panel-head{display:flex;}
+#colRight.open .copilot > .copilot-log{display:flex;}
+#colRight.open .copilot > .suggest-row{display:flex;}
+
+.copilot-composer{
+  display:flex; align-items:center; gap:8px; flex:none;
+  padding:10px 12px;
 }
-.copilot-bar.drawer-open{transform:translateX(calc(-50% - 200px));}
-.copilot-bar:focus-within{border-color:var(--accent); box-shadow:var(--shadow), 0 0 0 3px var(--accent-dim);}
-.copilot-bar input{
+#colRight.open .copilot-composer{border-top:1px solid var(--line);}
+.copilot-composer input{
   flex:1; border:none; background:none; outline:none;
-  color:var(--text); font-family:var(--font-body); font-size:13px;
+  color:var(--text); font-family:var(--font-body); font-size:13px; padding:4px 2px;
 }
-.copilot-bar input::placeholder{color:var(--text-faint);}
-.copilot-bar .send-btn{width:38px;height:38px;border-radius:50%;}
+.copilot-composer input::placeholder{color:var(--text-faint);}
+.copilot-composer .send-btn{width:36px;height:36px;border-radius:50%;flex:none;}
 
 .copilot-log{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;}
 .msg{max-width:92%;}
@@ -612,17 +613,16 @@ a{color:var(--accent);}
         <div class="panel-head">Analyst Copilot<span class="count">SGP4-grounded</span><button class="copilot-close" id="copilotClose" aria-label="Collapse Copilot">&#10005;</button></div>
         <div class="copilot-log" id="copilotLog"></div>
         <div class="suggest-row" id="suggestRow"></div>
+        <div class="copilot-composer">
+          <input type="text" id="copilotInput" placeholder="Ask the Analyst Copilot about tracked objects, regimes, or close approaches&hellip;" autocomplete="off">
+          <button class="send-btn" id="copilotSend" aria-label="Send" type="button">&#10148;</button>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
 <button class="filters-fab" id="filtersFab" type="button">Catalog Filters</button>
-
-<div class="copilot-bar" id="copilotBar">
-  <input type="text" id="copilotInput" placeholder="Ask the Analyst Copilot about tracked objects, regimes, or close approaches&hellip;" autocomplete="off">
-  <button class="send-btn" id="copilotSend" aria-label="Send" type="button">&#10148;</button>
-</div>
 
 <script src="https://cdn.jsdelivr.net/npm/satellite.js@6.0.1/dist/satellite.min.js"></script>
 <script>
@@ -3116,17 +3116,16 @@ function syncViewUI(){
 }
 
 function wireEvents(){
-  // Both side panels are edge-docked drawers (position:fixed, slid off-screen via
-  // transform until opened) rather than permanent grid columns, so the map can be
-  // full-width. Catalog Filters has its own toggle button; Copilot's drawer instead
-  // opens from its composer bar (#copilotBar, always visible bottom-center) — focusing
-  // or sending from that bar opens the conversation, mirroring the Claude app's always-
-  // present prompt box rather than a button that reveals one.
+  // Catalog Filters is an edge drawer (position:fixed, slid off-screen via transform
+  // until opened) so the map can be full-width. Copilot is a single self-contained
+  // panel instead: #colRight IS the box (background/border/shadow live on it directly
+  // now, not on .copilot inside it), collapsed by default to just its composer row and
+  // growing upward in place via a height transition when opened — composer and
+  // conversation always in the same box, the way Claude/Copilot Chat/Cursor do it,
+  // rather than a separate floating input detached from a response panel elsewhere.
   const colRight = document.getElementById('colRight');
-  const copilotBar = document.getElementById('copilotBar');
   const setCopilotPopped = (popped) => {
     colRight.classList.toggle('open', popped);
-    copilotBar.classList.toggle('drawer-open', popped);
   };
   document.getElementById('copilotClose').addEventListener('click', () => setCopilotPopped(false));
   document.getElementById('copilotInput').addEventListener('focus', () => setCopilotPopped(true));
