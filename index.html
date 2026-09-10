@@ -2509,6 +2509,29 @@ function isSameComplex(a, b){
     && angleDiffDeg(a.raanDeg, b.raanDeg) < COMPLEX_RAAN_TOL_DEG;
 }
 
+// Cheap, mathematically exact pre-filter for the O(pairs x timesteps) loop below: for
+// any two points at radii rA and rB from Earth's center, the reverse triangle
+// inequality guarantees their 3D separation is always >= |rA - rB|, at every instant,
+// regardless of where either object actually is along its orbit. So if object A's
+// altitude never leaves [perigeeA, apogeeA] and B's never leaves [perigeeB, apogeeB],
+// the closest those two altitude bands ever get bounds the closest the *objects* can
+// ever get — if that bound alone already exceeds the threshold, no amount of
+// propagating positions minute-by-minute across the lookahead window can find them
+// closer, so the full per-timestep distance loop can be skipped for that pair
+// entirely. This has zero false negatives: it only ever skips pairs that are
+// geometrically provably incapable of conjuncting, never a pair the unfiltered loop
+// would have found. ALTITUDE_FILTER_MARGIN_KM is a conservative safety buffer (not a
+// precision-driven value) against a TLE's perigee/apogee drifting slightly over the
+// lookahead window (drag, precession) — it only ever makes the filter *less*
+// aggressive, keeping a pair that's borderline rather than risking dropping one that
+// isn't quite as provably safe as the raw numbers suggest.
+const ALTITUDE_FILTER_MARGIN_KM = 10;
+
+function altitudeBandsCanReach(a, b, thresholdKm){
+  const gap = Math.max(0, a.perigeeKm - b.apogeeKm, b.perigeeKm - a.apogeeKm) - ALTITUDE_FILTER_MARGIN_KM;
+  return gap <= thresholdKm;
+}
+
 function runScreening(lookaheadHours){
   const btn = document.getElementById('runScreeningBtn');
   const body = document.getElementById('conjBody');
@@ -2527,6 +2550,7 @@ function runScreening(lookaheadHours){
     const results = [];
     let pairsChecked = 0;
     let coLocatedExcluded = 0;
+    let altitudeFiltered = 0;
 
     for (const regime of Object.keys(buckets)){
       const arr = buckets[regime];
@@ -2555,6 +2579,10 @@ function runScreening(lookaheadHours){
         for (let j=i+1;j<m;j++){
           if (!valid[j]) continue;
           pairsChecked++;
+          if (!altitudeBandsCanReach(arr[i], arr[j], thr)){
+            altitudeFiltered++;
+            continue;
+          }
           let minD2 = Infinity, minS = 0, startD2 = 0;
           for (let s=0;s<steps;s++){
             const ia = i*steps+s, ib = j*steps+s;
@@ -2586,7 +2614,7 @@ function runScreening(lookaheadHours){
     }
 
     results.sort((a,b) => a.missKm - b.missKm);
-    state.conjunctions = { results, lookaheadHours, computedAt: now, pairsChecked, coLocatedExcluded };
+    state.conjunctions = { results, lookaheadHours, computedAt: now, pairsChecked, coLocatedExcluded, altitudeFiltered };
     renderConjunctions();
     btn.disabled = false; btn.textContent = 'Run Screening';
   }, 30);
@@ -2671,6 +2699,7 @@ function renderConjunctions(){
   if (!c || !c.results.length){
     body.innerHTML = '<div class="conj-empty">Screening complete over a '+(c?c.lookaheadHours:'')+'h window ('+(c?c.pairsChecked:0)+' regime-bucketed pairs compared) &mdash; no candidates crossed the screening threshold.'
       + (c && c.coLocatedExcluded ? ' ('+c.coLocatedExcluded+' co-located pair'+(c.coLocatedExcluded===1?'':'s')+', e.g. station modules or docked spacecraft, excluded.)' : '')
+      + (c && c.altitudeFiltered ? ' ('+c.altitudeFiltered+' pair'+(c.altitudeFiltered===1?'':'s')+" skipped the full check — their altitude bands can't reach each other.)" : '')
       + '</div>';
     return;
   }
@@ -2687,6 +2716,7 @@ function renderConjunctions(){
     + c.results.length+' close-approach candidate'+(c.results.length===1?'':'s')+' found across '+c.pairsChecked+' pairs screened, '
     + c.lookaheadHours+'h lookahead, computed '+fmtUtc(c.computedAt)+'.'
     + (c.coLocatedExcluded ? ' '+c.coLocatedExcluded+' pair'+(c.coLocatedExcluded===1?'':'s')+' excluded as co-located structures (station modules, docked spacecraft) rather than conjunctions.' : '')
+    + (c.altitudeFiltered ? ' '+c.altitudeFiltered+' pair'+(c.altitudeFiltered===1?'':'s')+" skipped the full check — their altitude bands can't reach each other." : '')
     + (canadianCount ? ' <span class="ca-callout-count">🇨🇦 ' + canadianCount + ' critical involve' + (canadianCount===1?'s':'') + ' a Canadian spacecraft</span>' : '')
     + '</div>'
     + renderBucket('critical', 'CRITICAL &middot; &lt;5 km', critical, {canadianFlag:true})
