@@ -645,9 +645,9 @@ a{color:var(--accent);}
         </div>
         <div class="conj-thresholds" id="conjThresholds">
           <span class="thr-field">LEO <input type="number" id="thrLEO" value="10" min="1" max="500" step="1"> km</span>
-          <span class="thr-field">MEO <input type="number" id="thrMEO" value="60" min="1" max="1000" step="1"> km</span>
-          <span class="thr-field">GEO <input type="number" id="thrGEO" value="80" min="1" max="1000" step="1"> km</span>
-          <span class="thr-field">HEO/Other <input type="number" id="thrHEO" value="60" min="1" max="1000" step="1"> km</span>
+          <span class="thr-field">MEO <input type="number" id="thrMEO" value="25" min="1" max="1000" step="1"> km</span>
+          <span class="thr-field">GEO <input type="number" id="thrGEO" value="30" min="1" max="1000" step="1"> km</span>
+          <span class="thr-field">HEO/Other <input type="number" id="thrHEO" value="25" min="1" max="1000" step="1"> km</span>
           <span class="thr-hint">Max screening distance per regime &mdash; applies on next Run Screening</span>
         </div>
         <div class="conj-body" id="conjBody">
@@ -1567,10 +1567,28 @@ const state = {
   // LEO tightened from 25 to 10km once the live catalog (thousands of real Starlink
   // satellites in dense shells) replaced the old curated sample — at 25km the MONITOR
   // bucket (15km+) alone was ~76% of all candidates, mostly same-shell traffic too far
-  // apart to be worth an analyst's attention. MEO/GEO/HEO stay as-is: those regimes
-  // never saw the same object-count explosion, so their thresholds weren't tuned
-  // against an unrealistic sample the way LEO's was.
-  alertThresholds: { LEO: 10, MEO: 60, GEO: 80, 'HEO/Other': 60 },
+  // apart to be worth an analyst's attention; confirmed against a live run afterward
+  // (23,457 candidates dropped to 2,000 at 10km).
+  //
+  // MEO/GEO/HEO tightened the same direction but WITHOUT that same live-data
+  // confirmation yet — reasoned estimates, not measured ones:
+  //  - MEO (60->25): GNSS constellations (GPS/Galileo/GLONASS) are deliberately
+  //    spaced thousands of km apart, so this is mostly cutting slack the regime
+  //    never needed, not responding to any observed noise problem like LEO's.
+  //  - GEO (80->30): geostationary satellites all sit in essentially the same
+  //    narrow altitude band by definition, so the altitude pre-filter (index.html's
+  //    altitudeBandsCanReach) does nothing for GEO-vs-GEO the way it does for LEO's
+  //    genuinely varied altitudes — GEO's noise risk is structurally closer to
+  //    LEO's than MEO's is. ITU-coordinated GEO neighbors are typically kept on
+  //    the order of tens of km apart operationally, so 30km should still catch a
+  //    derelict actually drifting into a slot without flagging routine
+  //    station-keeping — but that spacing figure is a rough recollection, not a
+  //    verified number for this catalog.
+  //  - HEO/Other (60->25): no particular density signal either way, tightened by
+  //    the same proportion as MEO for consistency rather than a specific finding.
+  // Same validation step as LEO needed here: run screening and see what the actual
+  // per-regime candidate counts look like before treating these as settled.
+  alertThresholds: { LEO: 10, MEO: 25, GEO: 30, 'HEO/Other': 25 },
 };
 
 let canvas, ctx;
