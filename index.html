@@ -247,19 +247,22 @@ button{font-family:inherit;}
 /* Copilot is one unified panel — composer glued to the bottom of the same box that
    shows the conversation, like Claude/Copilot Chat/Cursor, rather than a separate
    floating input detached from a response drawer elsewhere on screen. Collapsed, it's
-   just the composer row, anchored bottom-right; sending or focusing it grows the same
-   box upward in place to reveal the log above the composer. Height-based (not
-   slide-based) so it never has to dodge anything else on screen. */
+   just the composer row, docked flush to the bottom-right corner; sending or focusing
+   it reveals the log above the composer by growing upward to the same full height as
+   Catalog Filters' own drawer (top:52px, i.e. flush under the topbar). Flush edges, no
+   margin, no border-radius, and a plain border like #colLeft's — a docked panel that's
+   part of the workspace, not a floating card hovering over it (which is what the
+   corner-margin + rounded-card version from the previous iteration actually read as). */
 #colRight{
-  position:fixed; right:20px; bottom:20px; z-index:999;
+  position:fixed; right:0; bottom:0; z-index:999;
   width:min(400px, calc(100vw - 40px));
   height:58px;
   background:var(--bg-panel); border:1px solid var(--line-strong);
-  border-radius:16px; box-shadow:var(--shadow);
+  box-shadow:var(--shadow);
   overflow:hidden;
   transition:height .22s ease;
 }
-#colRight.open{height:min(640px, calc(100vh - 100px));}
+#colRight.open{height:calc(100vh - 52px);}
 .panel-head{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:10px 14px;border-bottom:1px solid var(--line);
