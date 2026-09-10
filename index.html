@@ -201,9 +201,56 @@ button{font-family:inherit;}
 .ca-callout-count{color:var(--accent-2);font-weight:600;}
 
 /* ---- main grid ---- */
-.main{flex:1;display:grid;grid-template-columns:296px 1fr 356px;min-height:0;}
+.main{flex:1;display:grid;grid-template-columns:1fr;min-height:0;position:relative;}
 .col{min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--line);}
 .col:last-child{border-right:none;}
+
+/* ---- edge drawers (Catalog Filters + Copilot) ----
+   The map is now the only column reserved in the grid (see .main above); Catalog
+   Filters and Copilot are the same #colLeft/#colRight elements as before, but instead
+   of sitting in grid tracks they're position:fixed panels parked just off-screen
+   (translateX past their own width) and slid into view over the map on demand — the
+   "browser tab that pops out and collapses over the content" pattern. Verified no
+   ancestor sets transform/filter/perspective, which would otherwise make position:fixed
+   resolve against that ancestor instead of the viewport. */
+#colLeft{
+  position:fixed; left:0; top:52px; bottom:0; z-index:900;
+  width:296px;
+  background:var(--bg-panel); box-shadow:var(--shadow);
+  transform:translateX(-100%);
+  transition:transform .22s ease;
+}
+#colLeft.open{transform:translateX(0);}
+.drawer-head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 14px; height:40px; min-height:40px; flex:none;
+  font-family:var(--font-display); font-weight:600; font-size:11px;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim);
+  border-bottom:1px solid var(--line);
+}
+.drawer-close{
+  background:none; border:none; color:var(--text-faint);
+  font-size:13px; cursor:pointer; padding:2px 6px; line-height:1;
+}
+.drawer-close:hover{color:var(--text);}
+.filters-fab{
+  position:fixed; left:20px; bottom:20px; z-index:901;
+  display:flex; align-items:center; gap:8px;
+  padding:10px 16px; border-radius:999px;
+  border:1px solid var(--line-strong);
+  background:var(--bg-panel); color:var(--text-dim);
+  font-family:var(--font-display); font-weight:600;
+  font-size:12px; letter-spacing:.04em; text-transform:uppercase;
+  box-shadow:var(--shadow); cursor:pointer;
+}
+.filters-fab:hover{color:var(--text);border-color:var(--accent-dim);}
+#colRight{
+  position:fixed; right:0; top:52px; bottom:0; z-index:999;
+  width:min(400px, calc(100vw - 40px));
+  transform:translateX(100%);
+  transition:transform .22s ease;
+}
+#colRight.open{transform:translateX(0);}
 .panel-head{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:10px 14px;border-bottom:1px solid var(--line);
@@ -392,26 +439,15 @@ button{font-family:inherit;}
 .sw-updated{font-size:9px;color:var(--text-faint);}
 .kv.wide{grid-column:1/-1;}
 
-.copilot{flex:1;display:flex;flex-direction:column;min-height:0;}
+.copilot{
+  flex:1;display:flex;flex-direction:column;min-height:0;height:100%;
+  background:var(--bg-panel); box-shadow:var(--shadow);
+}
 .copilot-close{
-  display:none; background:none; border:none; color:var(--text-faint);
+  background:none; border:none; color:var(--text-faint);
   font-size:13px; cursor:pointer; padding:2px 6px; line-height:1;
 }
 .copilot-close:hover{color:var(--text);}
-/* Default state: the panel lives inline in the sidebar column exactly as before.
-   .popped is an additive overlay state toggled by the floating button below — it
-   doesn't touch or remove the sidebar layout, just repositions this same panel on
-   top of everything via position:fixed (verified no ancestor sets transform/filter/
-   perspective, which would otherwise make "fixed" behave relative to that ancestor
-   instead of the viewport). */
-.copilot.popped{
-  position:fixed; right:20px; bottom:88px; z-index:999;
-  width:min(420px, calc(100vw - 40px));
-  height:min(640px, calc(100vh - 140px));
-  background:var(--bg-panel); border:1px solid var(--line-strong);
-  border-radius:var(--radius); box-shadow:var(--shadow);
-}
-.copilot.popped .copilot-close{display:inline-block;}
 
 .copilot-fab{
   position:fixed; right:20px; bottom:20px; z-index:1000;
@@ -494,6 +530,7 @@ a{color:var(--accent);}
 
   <div class="main">
     <div class="col" id="colLeft">
+      <div class="drawer-head">Catalog Filters &amp; Data<button class="drawer-close" id="filtersClose" aria-label="Collapse filters">&#10005;</button></div>
       <div class="space-weather" id="spaceWeatherPanel">
         <div class="panel-head">Space Weather<span class="count">NOAA SWPC</span></div>
         <div class="sw-body" id="spaceWeatherBody"></div>
@@ -514,7 +551,7 @@ a{color:var(--accent);}
       <div class="obj-table" id="objTable"></div>
     </div>
 
-    <div class="col" id="colCenter" style="border-right:1px solid var(--line);">
+    <div class="col" id="colCenter" style="border-right:none;">
       <div class="map-wrap">
         <div class="map-toolbar">
           <div class="view-toggle" id="viewToggle">
@@ -578,6 +615,8 @@ a{color:var(--accent);}
     </div>
   </div>
 </div>
+
+<button class="filters-fab" id="filtersFab" type="button">Catalog Filters</button>
 
 <button class="copilot-fab" id="copilotFab" type="button">
   <span class="copilot-fab-dot"></span>Ask Copilot
@@ -3075,10 +3114,14 @@ function syncViewUI(){
 }
 
 function wireEvents(){
-  const copilotPanel = document.getElementById('copilotPanel');
+  // Both side panels are edge-docked drawers (position:fixed, slid off-screen via
+  // transform until opened) rather than permanent grid columns, so the map can be
+  // full-width. Each gets its own persistent toggle button; opening one doesn't close
+  // the other, since they dock to opposite edges and don't overlap.
+  const colRight = document.getElementById('colRight');
   const copilotFab = document.getElementById('copilotFab');
   const setCopilotPopped = (popped) => {
-    copilotPanel.classList.toggle('popped', popped);
+    colRight.classList.toggle('open', popped);
     copilotFab.textContent = ''; // rebuild below rather than leave stale text + dot
     const dot = document.createElement('span');
     dot.className = 'copilot-fab-dot';
@@ -3086,8 +3129,17 @@ function wireEvents(){
     copilotFab.appendChild(document.createTextNode(popped ? 'Close' : 'Ask Copilot'));
     if (popped) document.getElementById('copilotInput').focus();
   };
-  copilotFab.addEventListener('click', () => setCopilotPopped(!copilotPanel.classList.contains('popped')));
+  copilotFab.addEventListener('click', () => setCopilotPopped(!colRight.classList.contains('open')));
   document.getElementById('copilotClose').addEventListener('click', () => setCopilotPopped(false));
+
+  const colLeft = document.getElementById('colLeft');
+  const filtersFab = document.getElementById('filtersFab');
+  const setFiltersOpen = (open) => {
+    colLeft.classList.toggle('open', open);
+    filtersFab.textContent = open ? 'Close' : 'Catalog Filters';
+  };
+  filtersFab.addEventListener('click', () => setFiltersOpen(!colLeft.classList.contains('open')));
+  document.getElementById('filtersClose').addEventListener('click', () => setFiltersOpen(false));
 
   document.getElementById('objTable').addEventListener('click', e => {
     const pinBtn = e.target.closest('.pin-toggle');
