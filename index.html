@@ -644,7 +644,7 @@ a{color:var(--accent);}
           <span class="conj-note">Simplified geometric screening (no covariance) &middot; not an operational Pc / CDM</span>
         </div>
         <div class="conj-thresholds" id="conjThresholds">
-          <span class="thr-field">LEO <input type="number" id="thrLEO" value="25" min="1" max="500" step="1"> km</span>
+          <span class="thr-field">LEO <input type="number" id="thrLEO" value="10" min="1" max="500" step="1"> km</span>
           <span class="thr-field">MEO <input type="number" id="thrMEO" value="60" min="1" max="1000" step="1"> km</span>
           <span class="thr-field">GEO <input type="number" id="thrGEO" value="80" min="1" max="1000" step="1"> km</span>
           <span class="thr-field">HEO/Other <input type="number" id="thrHEO" value="60" min="1" max="1000" step="1"> km</span>
@@ -1564,7 +1564,13 @@ const state = {
   dragging: false,
   dragMoved: false,
   dragStart: { x: 0, y: 0, yaw: 0, pitch: 0 },
-  alertThresholds: { LEO: 25, MEO: 60, GEO: 80, 'HEO/Other': 60 },
+  // LEO tightened from 25 to 10km once the live catalog (thousands of real Starlink
+  // satellites in dense shells) replaced the old curated sample — at 25km the MONITOR
+  // bucket (15km+) alone was ~76% of all candidates, mostly same-shell traffic too far
+  // apart to be worth an analyst's attention. MEO/GEO/HEO stay as-is: those regimes
+  // never saw the same object-count explosion, so their thresholds weren't tuned
+  // against an unrealistic sample the way LEO's was.
+  alertThresholds: { LEO: 10, MEO: 60, GEO: 80, 'HEO/Other': 60 },
 };
 
 let canvas, ctx;
