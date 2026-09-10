@@ -483,6 +483,18 @@ button{font-family:inherit;}
 .launches-updated{font-size:9px;color:var(--text-faint);margin-top:4px;}
 .launches-empty{font-size:11px;color:var(--text-faint);padding:2px 0;}
 
+/* ---- decay watch ---- */
+.decay-watch-panel{border-bottom:1px solid var(--line);flex:none;}
+.decay-watch-body{padding:10px 14px 12px;display:flex;flex-direction:column;gap:2px;}
+.decay-row{padding:7px 0;border-bottom:1px solid var(--line);}
+.decay-row:last-child{border-bottom:none;}
+.decay-row .name{font-size:11px;font-weight:600;color:var(--text);}
+.decay-row .meta{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:3px;font-size:10px;color:var(--text-dim);}
+.decay-trend{font-family:var(--font-mono);font-weight:600;}
+.decay-trend.rising{color:var(--critical);}
+.decay-trend.flat{color:var(--text-faint);}
+.decay-trend.falling{color:var(--good);}
+
 .kv.wide{grid-column:1/-1;}
 
 .copilot{
@@ -572,6 +584,10 @@ a{color:var(--accent);}
       <div class="launches-panel" id="launchesPanel">
         <div class="panel-head">Upcoming Launches<span class="count">Launch Library 2</span></div>
         <div class="launches-body" id="launchesBody"><div class="launches-empty">loading&hellip;</div></div>
+      </div>
+      <div class="decay-watch-panel" id="decayWatchPanel">
+        <div class="panel-head">Decay Watch<span class="count">TLE trend</span></div>
+        <div class="decay-watch-body" id="decayWatchBody"><div class="launches-empty">not configured</div></div>
       </div>
       <div class="panel-head" id="categoryFiltersToggle" style="cursor:pointer;user-select:none;">
         <span><span class="bucket-chevron open" id="categoryChevron" style="margin-right:6px;">&#9656;</span>Catalog Filters</span>
@@ -1501,18 +1517,21 @@ const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, 
   + "You have tool access to the live tracked-object catalog (real TLEs propagated with SGP4) and the most recent conjunction "
   + "screening results. Ground every factual claim in tool output rather than guessing — call queryObjects, getObjectDetail, "
   + "listCloseApproaches, topConcerns, catalogSummary, focusObject, nextPass, overheadNow, checkIllumination, estimateDecayRisk, "
-  + "compareObjects, listRecentManeuvers, or upcomingLaunches as needed before answering. "
+  + "compareObjects, listRecentManeuvers, upcomingLaunches, or listDecayWatch as needed before answering. "
   + "Speak like a space operations analyst: concise, precise units (km, deg, km/s), operator terminology. If asked about collision "
   + "risk, be clear this is a simplified geometric proximity screening with no covariance data, not an operational probability of "
-  + "collision. If asked about orbital decay or re-entry timing, be equally clear that estimateDecayRisk is a rough heuristic from "
-  + "perigee and drag term only, not an atmospheric-density-modeled prediction. If tool data doesn't cover the question, say so "
-  + "plainly instead of speculating. When the operator asks to see, show, or focus on a specific object, call focusObject in "
-  + "addition to answering, so the map reflects it. nextPass requires an observer location — if the operator doesn't give one, ask. "
+  + "collision. If asked about orbital decay or re-entry timing, be clear that estimateDecayRisk's own perigee/BSTAR read is a rough "
+  + "heuristic, not an atmospheric-density-modeled prediction — its trend-based read (and listDecayWatch) is a real signal derived "
+  + "from how an object's mean motion has actually moved over time where TLE history is available, but still not a NORAD/Space-Track "
+  + "decay prediction. If tool data doesn't cover the question, say so plainly instead of speculating. When the operator asks to see, "
+  + "show, or focus on a specific object, call focusObject in addition to answering, so the map reflects it. nextPass requires an "
+  + "observer location — if the operator doesn't give one, ask. "
   + "When asked for a 'SITREP' or full situation report, synthesize one structured briefing from multiple tools rather than picking "
   + "just one: catalogSummary for the overall picture, topConcerns (or listCloseApproaches if no screening has run yet) for the "
-  + "closest/fastest conjunctions, listRecentManeuvers for anything flagged recently, and upcomingLaunches for what's about to join "
-  + "the catalog — note plainly if listRecentManeuvers reports itself not configured or upcomingLaunches reports itself unavailable "
-  + "rather than omitting either silently. Lead with what most needs attention, not a flat recitation of every number returned.";
+  + "closest/fastest conjunctions, listRecentManeuvers for anything flagged recently, upcomingLaunches for what's about to join the "
+  + "catalog, and listDecayWatch for anything trending toward re-entry — note plainly if any of these report themselves not "
+  + "configured or unavailable rather than omitting them silently. Lead with what most needs attention, not a flat recitation of "
+  + "every number returned.";
 
 // Set after deploying worker/index.html to Cloudflare Workers, e.g. 'https://northern-shrike-copilot.<subdomain>.workers.dev'.
 // Left blank, Copilot simply reports itself unavailable outside the Claude Artifact viewer.
@@ -1985,6 +2004,62 @@ async function loadLiveLaunches(){
     LAUNCHES_STATUS = 'unavailable — ' + (e && e.message);
     renderLaunches();
     console.warn('[launches] live fetch failed:', e && e.message);
+  }
+}
+
+// Rough, unvalidated cut points on mean-motion trend (revs/day of change, per day) —
+// same "starting point, not a validated detector" status as catalog-refresh's own
+// INCLINATION_JUMP_THRESHOLD_DEG. Tune these once real multi-week history accumulates
+// and it's possible to see what ordinary non-decaying objects' trends actually look
+// like; there's no literature value to anchor to here the way there is for perigee.
+function decayTrendClass(trendPerDay){
+  if (trendPerDay > 0.01) return { cls: 'rising', label: 'climbing fast — consistent with active/accelerating decay' };
+  if (trendPerDay > 0.001) return { cls: 'rising', label: 'trending upward — consistent with ongoing decay' };
+  if (trendPerDay < -0.001) return { cls: 'falling', label: 'trending downward — orbit raising (stationkeeping/reboost), not decaying' };
+  return { cls: 'flat', label: 'no meaningful trend in the observed window' };
+}
+
+const DECAY_WATCH_DAYS = 30;
+let DECAY_WATCH = null;
+let DECAY_WATCH_STATUS = 'not configured — the catalog-refresh Worker has not been deployed yet, so no TLE history is available.';
+
+function renderDecayWatch(){
+  const body = document.getElementById('decayWatchBody');
+  if (!body) return;
+  if (!DECAY_WATCH || !DECAY_WATCH.length){
+    body.innerHTML = '<div class="launches-empty">'+esc(DECAY_WATCH_STATUS)+'</div>';
+    return;
+  }
+  const top = DECAY_WATCH.slice(0, 5);
+  body.innerHTML = top.map(d => {
+    const t = decayTrendClass(d.meanMotionTrendPerDay);
+    const sign = d.meanMotionTrendPerDay >= 0 ? '+' : '';
+    return '<div class="decay-row">'
+      + '<div class="name">'+esc(d.name)+'</div>'
+      + '<div class="meta"><span>'+esc(t.label)+'</span><span class="decay-trend '+t.cls+'">'+sign+d.meanMotionTrendPerDay.toFixed(4)+'/day</span></div>'
+      + '</div>';
+  }).join('') + '<div class="launches-updated">TLE trend over '+esc(String(DECAY_WATCH_DAYS))+'d &middot; '+DECAY_WATCH.length+' objects with enough history</div>';
+}
+
+// Same shape of honesty as listRecentManeuvers: no fabricated placeholder data when the
+// catalog-refresh Worker isn't deployed, just a plain status string saying so — and no
+// network call attempted at all in that case, rather than a fetch guaranteed to fail.
+async function loadDecayWatch(){
+  if (!CATALOG_WORKER_URL){ renderDecayWatch(); return; }
+  try{
+    const resp = await fetch(CATALOG_WORKER_URL + '/decay-watch?days=' + DECAY_WATCH_DAYS);
+    if (!resp.ok) throw new Error('catalog-refresh worker returned ' + resp.status);
+    const data = await resp.json();
+    if (!Array.isArray(data)) throw new Error('unexpected /decay-watch response shape');
+    DECAY_WATCH = data;
+    DECAY_WATCH_STATUS = 'live · ' + data.length + ' objects with enough TLE history';
+    renderDecayWatch();
+    console.info('[decay watch] live trend data loaded.');
+  } catch(e){
+    DECAY_WATCH = null;
+    DECAY_WATCH_STATUS = 'unavailable — ' + (e && e.message);
+    renderDecayWatch();
+    console.warn('[decay watch] live fetch failed:', e && e.message);
   }
 }
 
@@ -2911,7 +2986,7 @@ function buildTools(toolLog){
     },
     {
       name: 'estimateDecayRisk',
-      description: 'Rough qualitative orbital-decay read for one tracked object, from its current perigee altitude and its TLE drag term (BSTAR). This is a heuristic for situational awareness only — not a NORAD/Space-Track decay prediction, which requires atmospheric density modeling this tool does not do.',
+      description: "Orbital-decay read for one tracked object: a rough heuristic from current perigee altitude and TLE drag term (BSTAR), plus — where the catalog-refresh Worker has enough TLE history for this object — a trend-based read from how its mean motion has actually moved over the observed window, a materially stronger signal since it reflects real behavior rather than a single-snapshot guess. Neither is a NORAD/Space-Track decay prediction, which requires atmospheric density modeling this tool does not do.",
       inputSchema: { type:'object', properties: { name: { type:'string' } }, required:['name'] },
       execute: (input) => {
         toolLog.push('estimateDecayRisk');
@@ -2926,11 +3001,22 @@ function buildTools(toolLog){
         else if (o.perigeeKm < 400 && bstar > 0.0001) risk = 'elevated — low perigee with a non-trivial drag term, plausible months-scale decay';
         else if (o.perigeeKm < 600) risk = 'low — perigee within measurable-drag range, but likely years-scale absent maneuvers';
         else risk = 'negligible — perigee high enough that drag is not a meaningful factor over any relevant planning horizon';
-        return {
+        const result = {
           object: o.name, perigeeAltKm: +o.perigeeKm.toFixed(1), bstar: +bstar.toFixed(6),
           qualitativeRisk: risk,
-          caveat: 'Heuristic from perigee altitude and BSTAR only — not an atmospheric-density-modeled decay prediction.',
+          caveat: 'Perigee/BSTAR heuristic only — not an atmospheric-density-modeled decay prediction.',
         };
+        const trendEntry = DECAY_WATCH && DECAY_WATCH.find(d => d.noradId === o.noradId);
+        if (trendEntry){
+          const t = decayTrendClass(trendEntry.meanMotionTrendPerDay);
+          result.trendBasedRisk = t.label;
+          result.meanMotionTrendPerDay = trendEntry.meanMotionTrendPerDay;
+          result.observedOverDays = trendEntry.observedOverDays;
+          result.trendCaveat = 'Derived from ' + trendEntry.observationCount + ' TLE observations over ' + trendEntry.observedOverDays + ' days — still not an atmospheric-density-modeled prediction, but reflects the object\'s actual recent behavior rather than a single-snapshot guess.';
+        } else {
+          result.trendBasedRisk = CATALOG_WORKER_URL ? 'not enough TLE history for this object yet' : DECAY_WATCH_STATUS;
+        }
+        return result;
       },
     },
     {
@@ -3049,6 +3135,24 @@ function buildTools(toolLog){
         return {
           source: 'Launch Library 2 (The Space Devs)',
           launches: LAUNCHES.map(l => ({ name: l.name, provider: l.provider, status: l.statusAbbrev, launchWindowUtc: fmtUtc(l.net) })),
+        };
+      },
+    },
+    {
+      name: 'listDecayWatch',
+      description: "Ranks tracked objects by how fast their mean motion has been climbing over the observed window — orbital altitude drops as an object's period shortens, so a sustained upward trend is a real decay signal from actual TLE history, not a single-snapshot guess like estimateDecayRisk's perigee/BSTAR heuristic. Every object has some trend value; this is not a binary flagged list, it's ranked steepest-first. Requires the catalog-refresh Worker to be deployed and configured; reports that plainly if it isn't rather than guessing.",
+      inputSchema: { type:'object', properties: { limit: { type:'number' } } },
+      execute: (input) => {
+        toolLog.push('listDecayWatch');
+        if (!DECAY_WATCH || !DECAY_WATCH.length) return { status: DECAY_WATCH_STATUS };
+        const lim = Math.min(Math.max((input && input.limit) || 10, 1), 40);
+        return {
+          observedOverDays: DECAY_WATCH_DAYS,
+          totalWithHistory: DECAY_WATCH.length,
+          topByDecayTrend: DECAY_WATCH.slice(0, lim).map(d => ({
+            name: d.name, category: d.category, meanMotionTrendPerDay: d.meanMotionTrendPerDay,
+            read: decayTrendClass(d.meanMotionTrendPerDay).label, observationCount: d.observationCount,
+          })),
         };
       },
     },
@@ -3472,6 +3576,7 @@ async function init(){
   renderSpaceWeather();
   loadLiveSpaceWeather(); // fire-and-forget; re-renders the panel in place if it succeeds
   loadLiveLaunches(); // fire-and-forget; same pattern
+  loadDecayWatch(); // fire-and-forget; renders "not configured" immediately if CATALOG_WORKER_URL is unset
   initCoastlines();
   updateAllPositions(new Date());
   resizeCanvas();

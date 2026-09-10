@@ -8,8 +8,11 @@
  *      changed since the last time it was seen (see schema.sql).
  *   2. fetch(): serves GET /catalog (latest snapshot per object, shaped to match the
  *      frontend's RAW_OBJECTS array), GET /maneuvers?days=N (objects whose inclination
- *      jumped between consecutive TLEs within the window), and GET /ingest-status
- *      (the last few cron runs, for checking the job is actually healthy).
+ *      jumped between consecutive TLEs within the window), GET /decay-watch?days=N
+ *      (objects ranked by how fast their mean motion is climbing over that window — a
+ *      trend-based decay signal, stronger than a single-snapshot perigee/drag guess),
+ *      and GET /ingest-status (the last few cron runs, for checking the job is
+ *      actually healthy).
  *
  * Deploy: see DEPLOY.md. Requires a D1 binding named DB (schema.sql) and a Cron Trigger.
  */
@@ -233,9 +236,58 @@ async function serveManeuvers(db, days){
   return flagged;
 }
 
+// Ranks objects by how fast their mean motion is climbing over the lookback window —
+// mean motion (revs/day) rises as an orbit's altitude drops, because a smaller orbit
+// has a shorter period (Kepler's third law), so a sustained upward trend is a real
+// decay signal, not just noise like a single day-to-day wobble would be. This is a
+// meaningfully stronger read than estimateDecayRisk's single-snapshot perigee+BSTAR
+// guess (index.html) because it's derived from what the object's orbit has actually
+// been doing over time, not a guess from today's elements alone.
+//
+// Deliberately NOT filtered to a "flagged" subset the way serveManeuvers() is: every
+// orbiting object has *some* drag-driven trend, so there's no natural jump/no-jump
+// threshold the way there is for a sudden inclination change. Instead this returns
+// every object with enough history, ranked steepest-climbing first, and leaves capping
+// to a top-N to the caller (matches listCloseApproaches/topConcerns in index.html).
+// DECAY_WATCH_MIN_DAYS_SPAN guards against a same-day refetch registering as a
+// "trend" from pure fit-to-fit noise rather than real multi-day movement.
+const DECAY_WATCH_MIN_DAYS_SPAN = 1;
+
+async function serveDecayWatch(db, days){
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+  const { results } = await db.prepare(
+    'SELECT norad_id, name, category, mean_motion, fetched_at FROM tle_history WHERE fetched_at >= ? ORDER BY norad_id, fetched_at ASC'
+  ).bind(cutoff).all();
+
+  const byObject = new Map();
+  for (const row of results){
+    if (!byObject.has(row.norad_id)) byObject.set(row.norad_id, []);
+    byObject.get(row.norad_id).push(row);
+  }
+
+  const ranked = [];
+  for (const [noradId, rows] of byObject){
+    if (rows.length < 2) continue; // need at least two observations to compute any trend at all
+    const first = rows[0], last = rows[rows.length - 1];
+    const daysSpan = (new Date(last.fetched_at).getTime() - new Date(first.fetched_at).getTime()) / 86400000;
+    if (daysSpan < DECAY_WATCH_MIN_DAYS_SPAN) continue;
+    const meanMotionTrendPerDay = (last.mean_motion - first.mean_motion) / daysSpan;
+    ranked.push({
+      noradId, name: last.name, category: last.category,
+      meanMotionTrendPerDay: +meanMotionTrendPerDay.toFixed(6),
+      meanMotionNow: last.mean_motion,
+      observationCount: rows.length,
+      observedOverDays: +daysSpan.toFixed(1),
+      firstObservedAt: first.fetched_at, lastObservedAt: last.fetched_at,
+    });
+  }
+  ranked.sort((a, b) => b.meanMotionTrendPerDay - a.meanMotionTrendPerDay);
+  return ranked;
+}
+
 // Named exports exist only so a test harness can call these directly — Cloudflare
 // Workers only ever invoke the default export below, so this has no runtime effect.
-export { normalizeRecord, parseTleText, runIngest, serveCatalog, serveManeuvers };
+export { normalizeRecord, parseTleText, runIngest, serveCatalog, serveManeuvers, serveDecayWatch };
 
 export default {
   async scheduled(event, env, ctx){
@@ -254,6 +306,13 @@ export default {
       if (url.pathname === '/maneuvers'){
         const days = Math.min(Math.max(parseInt(url.searchParams.get('days') || '7', 10) || 7, 1), 90);
         return new Response(JSON.stringify(await serveManeuvers(env.DB, days)), { headers });
+      }
+      if (url.pathname === '/decay-watch'){
+        // Default window is longer than /maneuvers' (30d vs 7d): a mean-motion trend
+        // needs more separation between observations to mean anything, where an
+        // inclination jump is visible between any two consecutive TLEs.
+        const days = Math.min(Math.max(parseInt(url.searchParams.get('days') || '30', 10) || 30, 1), 180);
+        return new Response(JSON.stringify(await serveDecayWatch(env.DB, days)), { headers });
       }
       if (url.pathname === '/ingest-status'){
         const { results } = await env.DB.prepare('SELECT * FROM ingest_runs ORDER BY started_at DESC LIMIT 5').all();
