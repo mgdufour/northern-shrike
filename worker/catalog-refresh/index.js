@@ -77,20 +77,15 @@ function normalizeRecord(record, category){
   return { noradId, name, category, ownerCode: guessOwnerCode(record), line1, line2, inclinationDeg, meanMotion };
 }
 
-// Inserts a new tle_history row for `rec` only if its TLE differs from the most
-// recently stored one for the same norad_id (or none exists yet). Returns true if a
-// row was inserted, false if this was a no-op (unchanged TLE since last ingest).
-async function ingestOne(db, rec, fetchedAt){
-  const existing = await db.prepare(
-    'SELECT line1, line2 FROM tle_history WHERE norad_id = ? ORDER BY fetched_at DESC LIMIT 1'
-  ).bind(rec.noradId).first();
-  if (existing && existing.line1 === rec.line1 && existing.line2 === rec.line2) return false;
-  await db.prepare(
-    `INSERT INTO tle_history (norad_id, name, category, owner_code, line1, line2, mean_motion, inclination_deg, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(rec.noradId, rec.name, rec.category, rec.ownerCode, rec.line1, rec.line2, rec.meanMotion, rec.inclinationDeg, fetchedAt).run();
-  return true;
-}
+// D1's batch() sends many statements to the database in one round trip. The exact
+// per-batch statement ceiling isn't something to guess at (same lesson as the NOAA
+// field-name mismatch earlier) — 50 is a conservative chunk size chosen to stay well
+// under any plausible limit, not a value taken from Cloudflare's own documented max.
+const INSERT_BATCH_SIZE = 50;
+
+const INSERT_TLE_SQL = `INSERT INTO tle_history
+  (norad_id, name, category, owner_code, line1, line2, mean_motion, inclination_deg, fetched_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 async function runIngest(env){
   const db = env.DB;
@@ -98,20 +93,57 @@ async function runIngest(env){
   let groupsFetched = 0, recordsSeen = 0, recordsChanged = 0, recordsSkipped = 0;
   let runError = null;
 
-  for (const { group, category } of CELESTRAK_GROUPS){
-    try {
-      const records = await fetchGroup(group);
-      groupsFetched++;
-      for (const raw of records){
-        recordsSeen++;
-        const rec = normalizeRecord(raw, category);
-        if (!rec){ recordsSkipped++; continue; }
-        const changed = await ingestOne(db, rec, startedAt);
-        if (changed) recordsChanged++;
-      }
-    } catch (e){
-      // One bad group shouldn't kill the whole run — record the error and keep going.
-      runError = (runError ? runError + '; ' : '') + group + ': ' + e.message;
+  // Fetch every CelesTrak group concurrently — these are independent HTTP calls, no
+  // reason to make one wait for the previous one to finish.
+  const settled = await Promise.allSettled(
+    CELESTRAK_GROUPS.map(async ({ group, category }) => ({ category, records: await fetchGroup(group) }))
+  );
+
+  const normalized = [];
+  settled.forEach((result, i) => {
+    const { group } = CELESTRAK_GROUPS[i];
+    if (result.status === 'rejected'){
+      runError = (runError ? runError + '; ' : '') + group + ': ' + result.reason.message;
+      return;
+    }
+    groupsFetched++;
+    for (const raw of result.value.records){
+      recordsSeen++;
+      const rec = normalizeRecord(raw, result.value.category);
+      if (!rec){ recordsSkipped++; continue; }
+      normalized.push(rec);
+    }
+  });
+
+  // One query to learn every object's latest stored TLE, instead of one query per
+  // object — this (plus batched inserts below) is what makes ingesting a group the
+  // size of Starlink's thousands of satellites tractable in a single request, where
+  // a one-at-a-time check-then-write per object was not.
+  const latestByNorad = new Map();
+  if (normalized.length){
+    const { results } = await db.prepare(
+      `SELECT t.norad_id, t.line1, t.line2 FROM tle_history t
+       INNER JOIN (SELECT norad_id, MAX(fetched_at) AS max_fetched FROM tle_history GROUP BY norad_id) m
+         ON t.norad_id = m.norad_id AND t.fetched_at = m.max_fetched`
+    ).all();
+    for (const row of results) latestByNorad.set(row.norad_id, row);
+  }
+
+  const toInsert = normalized.filter(rec => {
+    const existing = latestByNorad.get(rec.noradId);
+    return !existing || existing.line1 !== rec.line1 || existing.line2 !== rec.line2;
+  });
+
+  for (let i = 0; i < toInsert.length; i += INSERT_BATCH_SIZE){
+    const chunk = toInsert.slice(i, i + INSERT_BATCH_SIZE);
+    try{
+      await db.batch(chunk.map(rec => db.prepare(INSERT_TLE_SQL).bind(
+        rec.noradId, rec.name, rec.category, rec.ownerCode, rec.line1, rec.line2, rec.meanMotion, rec.inclinationDeg, startedAt
+      )));
+      recordsChanged += chunk.length;
+    } catch(e){
+      // One bad batch shouldn't lose the rest — record the error and keep going.
+      runError = (runError ? runError + '; ' : '') + 'insert batch at offset ' + i + ': ' + e.message;
     }
   }
 
@@ -176,7 +208,7 @@ async function serveManeuvers(db, days){
 
 // Named exports exist only so a test harness can call these directly — Cloudflare
 // Workers only ever invoke the default export below, so this has no runtime effect.
-export { normalizeRecord, ingestOne, runIngest, serveCatalog, serveManeuvers };
+export { normalizeRecord, runIngest, serveCatalog, serveManeuvers };
 
 export default {
   async scheduled(event, env, ctx){
