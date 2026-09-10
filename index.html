@@ -393,6 +393,43 @@ button{font-family:inherit;}
 .kv.wide{grid-column:1/-1;}
 
 .copilot{flex:1;display:flex;flex-direction:column;min-height:0;}
+.copilot-close{
+  display:none; background:none; border:none; color:var(--text-faint);
+  font-size:13px; cursor:pointer; padding:2px 6px; line-height:1;
+}
+.copilot-close:hover{color:var(--text);}
+/* Default state: the panel lives inline in the sidebar column exactly as before.
+   .popped is an additive overlay state toggled by the floating button below — it
+   doesn't touch or remove the sidebar layout, just repositions this same panel on
+   top of everything via position:fixed (verified no ancestor sets transform/filter/
+   perspective, which would otherwise make "fixed" behave relative to that ancestor
+   instead of the viewport). */
+.copilot.popped{
+  position:fixed; right:20px; bottom:88px; z-index:999;
+  width:min(420px, calc(100vw - 40px));
+  height:min(640px, calc(100vh - 140px));
+  background:var(--bg-panel); border:1px solid var(--line-strong);
+  border-radius:var(--radius); box-shadow:var(--shadow);
+}
+.copilot.popped .copilot-close{display:inline-block;}
+
+.copilot-fab{
+  position:fixed; right:20px; bottom:20px; z-index:1000;
+  display:flex; align-items:center; gap:8px;
+  padding:12px 18px; border-radius:999px; border:none;
+  background:var(--accent); color:var(--accent-ink);
+  font-family:var(--font-display); font-weight:600;
+  font-size:13px; letter-spacing:.04em; text-transform:uppercase;
+  box-shadow:var(--shadow); cursor:pointer;
+  animation:copilotFabPulse 2.4s ease-in-out infinite;
+}
+.copilot-fab:hover{animation:none; filter:brightness(1.08);}
+.copilot-fab-dot{width:7px;height:7px;border-radius:50%;background:var(--accent-ink);opacity:.7;flex:none;}
+@keyframes copilotFabPulse{
+  0%,100%{box-shadow:var(--shadow), 0 0 0 0 rgba(53,208,214,.4);}
+  50%{box-shadow:var(--shadow), 0 0 0 9px rgba(53,208,214,0);}
+}
+
 .copilot-log{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;}
 .msg{max-width:92%;}
 .msg.op{align-self:flex-end;}
@@ -413,6 +450,7 @@ button{font-family:inherit;}
   border:1px solid var(--line-strong);background:var(--bg-panel-2);color:var(--text-dim);cursor:pointer;
 }
 .suggest-chip:hover{border-color:var(--accent);color:var(--accent);}
+.suggest-chip.sitrep{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);font-weight:600;}
 .copilot-input{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line);flex:none;}
 .copilot-input input{
   flex:1;padding:8px 10px;background:var(--bg-panel-2);border:1px solid var(--line);border-radius:7px;
@@ -528,8 +566,8 @@ a{color:var(--accent);}
     </div>
 
     <div class="col" id="colRight" style="border-right:none;">
-      <div class="copilot">
-        <div class="panel-head">Analyst Copilot<span class="count">SGP4-grounded</span></div>
+      <div class="copilot" id="copilotPanel">
+        <div class="panel-head">Analyst Copilot<span class="count">SGP4-grounded</span><button class="copilot-close" id="copilotClose" aria-label="Collapse Copilot">&#10005;</button></div>
         <div class="copilot-log" id="copilotLog"></div>
         <div class="suggest-row" id="suggestRow"></div>
         <div class="copilot-input">
@@ -540,6 +578,10 @@ a{color:var(--accent);}
     </div>
   </div>
 </div>
+
+<button class="copilot-fab" id="copilotFab" type="button">
+  <span class="copilot-fab-dot"></span>Ask Copilot
+</button>
 
 <script src="https://cdn.jsdelivr.net/npm/satellite.js@6.0.1/dist/satellite.min.js"></script>
 <script>
@@ -1391,7 +1433,12 @@ const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, 
   + "collision. If asked about orbital decay or re-entry timing, be equally clear that estimateDecayRisk is a rough heuristic from "
   + "perigee and drag term only, not an atmospheric-density-modeled prediction. If tool data doesn't cover the question, say so "
   + "plainly instead of speculating. When the operator asks to see, show, or focus on a specific object, call focusObject in "
-  + "addition to answering, so the map reflects it. nextPass requires an observer location — if the operator doesn't give one, ask.";
+  + "addition to answering, so the map reflects it. nextPass requires an observer location — if the operator doesn't give one, ask. "
+  + "When asked for a 'SITREP' or full situation report, synthesize one structured briefing from multiple tools rather than picking "
+  + "just one: catalogSummary for the overall picture, topConcerns (or listCloseApproaches if no screening has run yet) for the "
+  + "closest/fastest conjunctions, and listRecentManeuvers for anything flagged recently — note plainly if that last one reports "
+  + "itself not configured rather than omitting it silently. Lead with what most needs attention, not a flat recitation of every "
+  + "number returned.";
 
 // Set after deploying worker/index.html to Cloudflare Workers, e.g. 'https://northern-shrike-copilot.<subdomain>.workers.dev'.
 // Left blank, Copilot simply reports itself unavailable outside the Claude Artifact viewer.
@@ -3001,15 +3048,18 @@ async function initCopilot(){
 function seedCopilot(){
   appendMessage('ai', 'Analyst Copilot online. I have tool access to the live tracked-object catalog and the latest conjunction screening — ask me anything about what’s on the picture.');
   const suggestions = [
-    'Which objects are in GEO?',
-    'Any close approaches inside 24h?',
-    'Tell me about ISS (ZARYA)',
-    'How many Chinese objects are we tracking?',
+    { label: 'Full SITREP', message: 'Give me a full SITREP.', sitrep: true },
+    { label: 'Which objects are in GEO?', message: 'Which objects are in GEO?' },
+    { label: 'Any close approaches inside 24h?', message: 'Any close approaches inside 24h?' },
+    { label: 'Tell me about ISS (ZARYA)', message: 'Tell me about ISS (ZARYA)' },
+    { label: 'How many Chinese objects are we tracking?', message: 'How many Chinese objects are we tracking?' },
   ];
   const row = document.getElementById('suggestRow');
-  row.innerHTML = suggestions.map(s => '<span class="suggest-chip">'+esc(s)+'</span>').join('');
+  row.innerHTML = suggestions.map(s =>
+    '<span class="suggest-chip'+(s.sitrep?' sitrep':'')+'" data-message="'+esc(s.message)+'">'+esc(s.label)+'</span>'
+  ).join('');
   row.querySelectorAll('.suggest-chip').forEach(chip => {
-    chip.addEventListener('click', () => sendToCopilot(chip.textContent));
+    chip.addEventListener('click', () => sendToCopilot(chip.getAttribute('data-message')));
   });
 }
 
@@ -3025,6 +3075,20 @@ function syncViewUI(){
 }
 
 function wireEvents(){
+  const copilotPanel = document.getElementById('copilotPanel');
+  const copilotFab = document.getElementById('copilotFab');
+  const setCopilotPopped = (popped) => {
+    copilotPanel.classList.toggle('popped', popped);
+    copilotFab.textContent = ''; // rebuild below rather than leave stale text + dot
+    const dot = document.createElement('span');
+    dot.className = 'copilot-fab-dot';
+    copilotFab.appendChild(dot);
+    copilotFab.appendChild(document.createTextNode(popped ? 'Close' : 'Ask Copilot'));
+    if (popped) document.getElementById('copilotInput').focus();
+  };
+  copilotFab.addEventListener('click', () => setCopilotPopped(!copilotPanel.classList.contains('popped')));
+  document.getElementById('copilotClose').addEventListener('click', () => setCopilotPopped(false));
+
   document.getElementById('objTable').addEventListener('click', e => {
     const pinBtn = e.target.closest('.pin-toggle');
     if (pinBtn){ togglePin(parseInt(pinBtn.dataset.pinId,10)); return; }
