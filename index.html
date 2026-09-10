@@ -463,6 +463,26 @@ button{font-family:inherit;}
 .sw-row{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;color:var(--text-dim);}
 .sw-row b{color:var(--text);font-family:var(--font-mono);font-weight:600;font-size:12px;}
 .sw-updated{font-size:9px;color:var(--text-faint);}
+
+/* ---- upcoming launches ---- */
+.launches-panel{border-bottom:1px solid var(--line);flex:none;}
+.launches-body{padding:10px 14px 12px;display:flex;flex-direction:column;gap:2px;}
+.launch-row{padding:7px 0;border-bottom:1px solid var(--line);}
+.launch-row:last-child{border-bottom:none;}
+.launch-name{font-size:11px;font-weight:600;color:var(--text);line-height:1.3;}
+.launch-meta{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:3px;font-size:10px;color:var(--text-dim);}
+.launch-meta .provider{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.launch-status{
+  flex:none;font-size:9px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;
+  padding:1px 6px;border-radius:3px;background:var(--bg-panel-2);color:var(--text-faint);
+}
+.launch-status.go,.launch-status.success{color:var(--good);background:rgba(74,222,128,.12);}
+.launch-status.hold{color:var(--warn);background:rgba(240,169,78,.12);}
+.launch-status.failure{color:var(--critical);background:var(--critical-dim);}
+.launch-time{font-size:10px;color:var(--text-faint);margin-top:2px;font-family:var(--font-mono);}
+.launches-updated{font-size:9px;color:var(--text-faint);margin-top:4px;}
+.launches-empty{font-size:11px;color:var(--text-faint);padding:2px 0;}
+
 .kv.wide{grid-column:1/-1;}
 
 .copilot{
@@ -548,6 +568,10 @@ a{color:var(--accent);}
       <div class="space-weather" id="spaceWeatherPanel">
         <div class="panel-head">Space Weather<span class="count">NOAA SWPC</span></div>
         <div class="sw-body" id="spaceWeatherBody"></div>
+      </div>
+      <div class="launches-panel" id="launchesPanel">
+        <div class="panel-head">Upcoming Launches<span class="count">Launch Library 2</span></div>
+        <div class="launches-body" id="launchesBody"><div class="launches-empty">loading&hellip;</div></div>
       </div>
       <div class="panel-head" id="categoryFiltersToggle" style="cursor:pointer;user-select:none;">
         <span><span class="bucket-chevron open" id="categoryChevron" style="margin-right:6px;">&#9656;</span>Catalog Filters</span>
@@ -1477,7 +1501,7 @@ const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, 
   + "You have tool access to the live tracked-object catalog (real TLEs propagated with SGP4) and the most recent conjunction "
   + "screening results. Ground every factual claim in tool output rather than guessing — call queryObjects, getObjectDetail, "
   + "listCloseApproaches, topConcerns, catalogSummary, focusObject, nextPass, overheadNow, checkIllumination, estimateDecayRisk, "
-  + "compareObjects, or listRecentManeuvers as needed before answering. "
+  + "compareObjects, listRecentManeuvers, or upcomingLaunches as needed before answering. "
   + "Speak like a space operations analyst: concise, precise units (km, deg, km/s), operator terminology. If asked about collision "
   + "risk, be clear this is a simplified geometric proximity screening with no covariance data, not an operational probability of "
   + "collision. If asked about orbital decay or re-entry timing, be equally clear that estimateDecayRisk is a rough heuristic from "
@@ -1486,9 +1510,9 @@ const SYSTEM_PROMPT = "You are the Analyst Copilot embedded in Northern Shrike, 
   + "addition to answering, so the map reflects it. nextPass requires an observer location — if the operator doesn't give one, ask. "
   + "When asked for a 'SITREP' or full situation report, synthesize one structured briefing from multiple tools rather than picking "
   + "just one: catalogSummary for the overall picture, topConcerns (or listCloseApproaches if no screening has run yet) for the "
-  + "closest/fastest conjunctions, and listRecentManeuvers for anything flagged recently — note plainly if that last one reports "
-  + "itself not configured rather than omitting it silently. Lead with what most needs attention, not a flat recitation of every "
-  + "number returned.";
+  + "closest/fastest conjunctions, listRecentManeuvers for anything flagged recently, and upcomingLaunches for what's about to join "
+  + "the catalog — note plainly if listRecentManeuvers reports itself not configured or upcomingLaunches reports itself unavailable "
+  + "rather than omitting either silently. Lead with what most needs attention, not a flat recitation of every number returned.";
 
 // Set after deploying worker/index.html to Cloudflare Workers, e.g. 'https://northern-shrike-copilot.<subdomain>.workers.dev'.
 // Left blank, Copilot simply reports itself unavailable outside the Claude Artifact viewer.
@@ -1897,6 +1921,70 @@ async function loadLiveSpaceWeather(){
     SPACE_WEATHER_STATUS = 'static snapshot — live fetch failed: ' + (e && e.message);
     renderSpaceWeather();
     console.warn('[space weather] live fetch failed, staying on the static snapshot:', e && e.message);
+  }
+}
+
+const LAUNCHES_URL = 'https://ll.thespacedevs.com/2.2.0/launch/upcoming/?limit=5&mode=normal&ordering=net';
+
+let LAUNCHES = null;
+let LAUNCHES_STATUS = 'not loaded';
+
+function renderLaunches(){
+  const body = document.getElementById('launchesBody');
+  if (!body) return;
+  if (!LAUNCHES || !LAUNCHES.length){
+    body.innerHTML = '<div class="launches-empty">'+esc(LAUNCHES_STATUS)+'</div>';
+    return;
+  }
+  const now = new Date();
+  const statusClass = (abbrev) => {
+    const a = (abbrev || '').toLowerCase();
+    if (a === 'go' || a === 'success') return 'go';
+    if (a === 'failure' || a === 'partial failure') return 'failure';
+    if (a === 'hold' || a === 'in flight') return 'hold';
+    return '';
+  };
+  body.innerHTML = LAUNCHES.map(l =>
+    '<div class="launch-row">'
+    + '<div class="launch-name">'+esc(l.name)+'</div>'
+    + '<div class="launch-meta"><span class="provider">'+esc(l.provider)+'</span><span class="launch-status '+statusClass(l.statusAbbrev)+'">'+esc(l.statusAbbrev)+'</span></div>'
+    + '<div class="launch-time">'+formatCountdown(l.net, now)+' &middot; '+esc(fmtUtc(l.net))+'</div>'
+    + '</div>'
+  ).join('') + '<div class="launches-updated">'+esc(LAUNCHES_STATUS)+'</div>';
+}
+
+// No baked-in fallback dataset here, unlike space weather — a stale space-weather
+// snapshot is still roughly the right shape and clearly labeled as static, but stale
+// launch data (dates, statuses) would actively mislead rather than just be dated. A
+// failed fetch shows a plain "unavailable" message instead, same honesty standard as
+// listRecentManeuvers reporting itself "not configured" rather than guessing.
+async function loadLiveLaunches(){
+  try{
+    const resp = await fetch(LAUNCHES_URL);
+    if (!resp.ok) throw new Error('non-200 response from Launch Library 2 (' + resp.status + ')');
+    const data = await resp.json();
+    if (!data || !Array.isArray(data.results)) throw new Error('unexpected launch/upcoming response shape');
+    const parsed = [];
+    for (const item of data.results){
+      const name = item && item.name;
+      const netRaw = item && item.net;
+      if (typeof name !== 'string' || typeof netRaw !== 'string') continue;
+      const net = new Date(netRaw);
+      if (isNaN(net.getTime())) continue;
+      const provider = (item.launch_service_provider && item.launch_service_provider.name) || 'Unknown provider';
+      const statusAbbrev = (item.status && (item.status.abbrev || item.status.name)) || 'TBD';
+      parsed.push({ name, net, provider, statusAbbrev });
+    }
+    if (!parsed.length) throw new Error('no usable launch entries in response');
+    LAUNCHES = parsed;
+    LAUNCHES_STATUS = 'live · Launch Library 2 (The Space Devs)';
+    renderLaunches();
+    console.info('[launches] live upcoming-launch data loaded.');
+  } catch(e){
+    LAUNCHES = null;
+    LAUNCHES_STATUS = 'unavailable — ' + (e && e.message);
+    renderLaunches();
+    console.warn('[launches] live fetch failed:', e && e.message);
   }
 }
 
@@ -2951,6 +3039,19 @@ function buildTools(toolLog){
         return { totalObjects: state.objects.length, byCategory: byCat, byRegime: byRegime, byOwner: byOwner, currentUtc: fmtUtc(new Date()) };
       },
     },
+    {
+      name: 'upcomingLaunches',
+      description: 'Lists upcoming space launches (name, provider, status, launch window) from Launch Library 2 (The Space Devs), a free public launch-schedule aggregator — context for new objects about to enter the catalog. Reports plainly if live launch data is unavailable rather than guessing.',
+      inputSchema: { type:'object', properties: {} },
+      execute: () => {
+        toolLog.push('upcomingLaunches');
+        if (!LAUNCHES || !LAUNCHES.length) return { status: LAUNCHES_STATUS };
+        return {
+          source: 'Launch Library 2 (The Space Devs)',
+          launches: LAUNCHES.map(l => ({ name: l.name, provider: l.provider, status: l.statusAbbrev, launchWindowUtc: fmtUtc(l.net) })),
+        };
+      },
+    },
   ];
 }
 
@@ -3370,6 +3471,7 @@ async function init(){
   computeStats();
   renderSpaceWeather();
   loadLiveSpaceWeather(); // fire-and-forget; re-renders the panel in place if it succeeds
+  loadLiveLaunches(); // fire-and-forget; same pattern
   initCoastlines();
   updateAllPositions(new Date());
   resizeCanvas();
