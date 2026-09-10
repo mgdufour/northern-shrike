@@ -449,22 +449,33 @@ button{font-family:inherit;}
 }
 .copilot-close:hover{color:var(--text);}
 
-.copilot-fab{
-  position:fixed; right:20px; bottom:20px; z-index:1000;
+/* ---- Copilot composer bar ----
+   The primary entry point into Copilot: always visible, bottom-center, styled to read
+   as THE input on the page (like the Claude app's prompt box) rather than a button you
+   click to reveal one. Focusing or sending from it opens the Copilot drawer (#colRight),
+   which docks up to 400px wide on the right edge — wide enough to overlap a centered
+   640px bar on common laptop widths (~1366-1440px). The .drawer-open modifier (toggled
+   alongside #colRight's own .open class) shifts the bar left by half that reserved
+   width whenever the drawer is actually showing, so the one time you're most likely to
+   be typing — mid-conversation — is the one time collision was otherwise guaranteed. */
+.copilot-bar{
+  position:fixed; left:50%; bottom:22px; z-index:1000;
+  transform:translateX(-50%);
   display:flex; align-items:center; gap:8px;
-  padding:12px 18px; border-radius:999px; border:none;
-  background:var(--accent); color:var(--accent-ink);
-  font-family:var(--font-display); font-weight:600;
-  font-size:13px; letter-spacing:.04em; text-transform:uppercase;
-  box-shadow:var(--shadow); cursor:pointer;
-  animation:copilotFabPulse 2.4s ease-in-out infinite;
+  width:min(640px, calc(100vw - 300px));
+  padding:6px 6px 6px 18px; border-radius:999px;
+  background:var(--bg-panel); border:1px solid var(--line-strong);
+  box-shadow:var(--shadow);
+  transition:transform .22s ease, border-color .15s ease, box-shadow .15s ease;
 }
-.copilot-fab:hover{animation:none; filter:brightness(1.08);}
-.copilot-fab-dot{width:7px;height:7px;border-radius:50%;background:var(--accent-ink);opacity:.7;flex:none;}
-@keyframes copilotFabPulse{
-  0%,100%{box-shadow:var(--shadow), 0 0 0 0 rgba(53,208,214,.4);}
-  50%{box-shadow:var(--shadow), 0 0 0 9px rgba(53,208,214,0);}
+.copilot-bar.drawer-open{transform:translateX(calc(-50% - 200px));}
+.copilot-bar:focus-within{border-color:var(--accent); box-shadow:var(--shadow), 0 0 0 3px var(--accent-dim);}
+.copilot-bar input{
+  flex:1; border:none; background:none; outline:none;
+  color:var(--text); font-family:var(--font-body); font-size:13px;
 }
+.copilot-bar input::placeholder{color:var(--text-faint);}
+.copilot-bar .send-btn{width:38px;height:38px;border-radius:50%;}
 
 .copilot-log{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;}
 .msg{max-width:92%;}
@@ -487,12 +498,6 @@ button{font-family:inherit;}
 }
 .suggest-chip:hover{border-color:var(--accent);color:var(--accent);}
 .suggest-chip.sitrep{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);font-weight:600;}
-.copilot-input{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line);flex:none;}
-.copilot-input input{
-  flex:1;padding:8px 10px;background:var(--bg-panel-2);border:1px solid var(--line);border-radius:7px;
-  color:var(--text);font-family:var(--font-body);font-size:12px;
-}
-.copilot-input input:focus{outline:none;border-color:var(--accent);}
 .send-btn{
   width:34px;height:34px;border-radius:7px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);
   display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;
@@ -607,10 +612,6 @@ a{color:var(--accent);}
         <div class="panel-head">Analyst Copilot<span class="count">SGP4-grounded</span><button class="copilot-close" id="copilotClose" aria-label="Collapse Copilot">&#10005;</button></div>
         <div class="copilot-log" id="copilotLog"></div>
         <div class="suggest-row" id="suggestRow"></div>
-        <div class="copilot-input">
-          <input type="text" id="copilotInput" placeholder="Ask about tracked objects, regimes, or close approaches&hellip;">
-          <button class="send-btn" id="copilotSend" aria-label="Send">&#10148;</button>
-        </div>
       </div>
     </div>
   </div>
@@ -618,9 +619,10 @@ a{color:var(--accent);}
 
 <button class="filters-fab" id="filtersFab" type="button">Catalog Filters</button>
 
-<button class="copilot-fab" id="copilotFab" type="button">
-  <span class="copilot-fab-dot"></span>Ask Copilot
-</button>
+<div class="copilot-bar" id="copilotBar">
+  <input type="text" id="copilotInput" placeholder="Ask the Analyst Copilot about tracked objects, regimes, or close approaches&hellip;" autocomplete="off">
+  <button class="send-btn" id="copilotSend" aria-label="Send" type="button">&#10148;</button>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/satellite.js@6.0.1/dist/satellite.min.js"></script>
 <script>
@@ -3116,21 +3118,18 @@ function syncViewUI(){
 function wireEvents(){
   // Both side panels are edge-docked drawers (position:fixed, slid off-screen via
   // transform until opened) rather than permanent grid columns, so the map can be
-  // full-width. Each gets its own persistent toggle button; opening one doesn't close
-  // the other, since they dock to opposite edges and don't overlap.
+  // full-width. Catalog Filters has its own toggle button; Copilot's drawer instead
+  // opens from its composer bar (#copilotBar, always visible bottom-center) — focusing
+  // or sending from that bar opens the conversation, mirroring the Claude app's always-
+  // present prompt box rather than a button that reveals one.
   const colRight = document.getElementById('colRight');
-  const copilotFab = document.getElementById('copilotFab');
+  const copilotBar = document.getElementById('copilotBar');
   const setCopilotPopped = (popped) => {
     colRight.classList.toggle('open', popped);
-    copilotFab.textContent = ''; // rebuild below rather than leave stale text + dot
-    const dot = document.createElement('span');
-    dot.className = 'copilot-fab-dot';
-    copilotFab.appendChild(dot);
-    copilotFab.appendChild(document.createTextNode(popped ? 'Close' : 'Ask Copilot'));
-    if (popped) document.getElementById('copilotInput').focus();
+    copilotBar.classList.toggle('drawer-open', popped);
   };
-  copilotFab.addEventListener('click', () => setCopilotPopped(!colRight.classList.contains('open')));
   document.getElementById('copilotClose').addEventListener('click', () => setCopilotPopped(false));
+  document.getElementById('copilotInput').addEventListener('focus', () => setCopilotPopped(true));
 
   const colLeft = document.getElementById('colLeft');
   const filtersFab = document.getElementById('filtersFab');
@@ -3205,10 +3204,14 @@ function wireEvents(){
     }
   });
   document.getElementById('copilotSend').addEventListener('click', () => {
+    setCopilotPopped(true);
     sendToCopilot(document.getElementById('copilotInput').value);
   });
   document.getElementById('copilotInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') sendToCopilot(document.getElementById('copilotInput').value);
+    if (e.key === 'Enter'){
+      setCopilotPopped(true);
+      sendToCopilot(document.getElementById('copilotInput').value);
+    }
   });
 
   document.querySelectorAll('.view-btn').forEach(btn => {
