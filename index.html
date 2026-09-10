@@ -190,6 +190,18 @@ button{font-family:inherit;}
 .alert-badge.critical{display:flex;color:var(--critical);border:1px solid var(--critical);background:var(--critical-dim);animation:pulse 1.4s ease-in-out infinite;}
 .alert-badge:hover{filter:brightness(1.2);}
 @media (prefers-reduced-motion: reduce){.alert-badge.critical{animation:none;}}
+/* The :root palette above is dark by default, with a full light palette already
+   defined for prefers-color-scheme:light and for an explicit [data-theme="light"]
+   override — this button is the missing manual switch between the two, regardless of
+   what the OS/browser reports. It persists the explicit choice to localStorage; with
+   nothing stored, the page keeps following the system preference as before. */
+.theme-toggle{
+  display:flex; align-items:center; justify-content:center; flex:none;
+  width:30px; height:30px; border-radius:6px;
+  border:1px solid var(--line); background:var(--bg-panel-2); color:var(--text-dim);
+  font-size:14px; cursor:pointer;
+}
+.theme-toggle:hover{color:var(--text); border-color:var(--accent-dim);}
 
 /* ---- conjunction bucket / ca tag ---- */
 .ca-tag{
@@ -527,6 +539,7 @@ a{color:var(--accent);}
     <div class="topbar-stats">
       <div class="tstat"><span class="v" id="statTotal">0</span><span class="l">Tracked Objects</span></div>
     </div>
+    <button class="theme-toggle" id="themeToggle" type="button"></button>
   </div>
 
   <div class="main">
@@ -3136,6 +3149,13 @@ function wireEvents(){
   filtersFab.addEventListener('click', () => setFiltersOpen(!colLeft.classList.contains('open')));
   document.getElementById('filtersClose').addEventListener('click', () => setFiltersOpen(false));
 
+  document.getElementById('themeToggle').addEventListener('click', () => {
+    const next = currentEffectiveTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('nsTheme', next); } catch(e){}
+    updateThemeToggleIcon();
+  });
+
   document.getElementById('objTable').addEventListener('click', e => {
     const pinBtn = e.target.closest('.pin-toggle');
     if (pinBtn){ togglePin(parseInt(pinBtn.dataset.pinId,10)); return; }
@@ -3316,7 +3336,29 @@ function startAnimationLoop(){
   }, 1000);
 }
 
+function currentEffectiveTheme(){
+  const explicit = document.documentElement.getAttribute('data-theme');
+  if (explicit === 'dark' || explicit === 'light') return explicit;
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+}
+
+function updateThemeToggleIcon(){
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+  const isDark = currentEffectiveTheme() === 'dark';
+  btn.innerHTML = isDark ? '&#9728;' : '&#9789;'; // shows the theme a click switches TO
+  btn.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
+}
+
+function initTheme(){
+  let stored = null;
+  try { stored = localStorage.getItem('nsTheme'); } catch(e){}
+  if (stored === 'dark' || stored === 'light') document.documentElement.setAttribute('data-theme', stored);
+  updateThemeToggleIcon();
+}
+
 async function init(){
+  initTheme();
   canvas = document.getElementById('mapCanvas');
   ctx = canvas.getContext('2d');
   state.objects = buildCatalog(await resolveCatalogData());
