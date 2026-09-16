@@ -1,35 +1,32 @@
 /*
  * Northern Shrike catalog-refresh Worker.
  *
- * Separate from the Copilot proxy worker (worker/index.js) — this one owns a D1
- * binding and has two jobs:
- *   1. scheduled(): on a Cron Trigger, pull the tracked-object catalog from CelesTrak
- *      per category group and insert a new tle_history row for any object whose TLE
- *      changed since the last time it was seen (see schema.sql).
- *   2. fetch(): serves GET /catalog (latest snapshot per object, shaped to match the
- *      frontend's RAW_OBJECTS array), GET /maneuvers?days=N (objects whose inclination
- *      jumped between consecutive TLEs within the window), GET /decay-watch?days=N
- *      (objects ranked by how fast their mean motion is climbing over that window — a
- *      trend-based decay signal, stronger than a single-snapshot perigee/drag guess),
- *      and GET /ingest-status (the last few cron runs, for checking the job is
- *      actually healthy).
+ * Read-only now. This used to also own the CelesTrak ingest job (a scheduled() handler
+ * firing on a Cron Trigger), but every ingest attempt from here failed with a 522
+ * (Cloudflare's "origin never responded") on every single CelesTrak group, consistently,
+ * for 24+ hours straight — while CelesTrak loaded fine from a normal browser on a
+ * different network the whole time. Switching the fetches from concurrent to sequential
+ * made zero difference (still 100% failure), which rules out a request-burst/rate-limit
+ * explanation and points at something blocking or badly timing out Cloudflare Workers'
+ * shared egress IP range specifically — not fixable by anything this Worker does.
  *
- * Deploy: see DEPLOY.md. Requires a D1 binding named DB (schema.sql) and a Cron Trigger.
+ * The ingest job now lives in .github/workflows/catalog-ingest.yml +
+ * .github/scripts/ingest-catalog.mjs, running on GitHub Actions' own runners (a
+ * different IP range) and writing to this same D1 database via its REST API instead of
+ * the in-Worker binding used here. This file's only remaining job is serving reads:
+ *   GET /catalog          — latest TLE snapshot per object, shaped to match the
+ *                            frontend's RAW_OBJECTS array
+ *   GET /maneuvers?days=N — objects whose inclination jumped between consecutive TLEs
+ *                            within the window
+ *   GET /decay-watch?days=N — objects ranked by how fast their mean motion is climbing
+ *                            over that window (a trend-based decay signal)
+ *   GET /ingest-status    — the last few ingest runs (now written by the GitHub Actions
+ *                            job instead of this Worker, but the same ingest_runs table)
+ *
+ * Deploy: see DEPLOY.md. Requires a D1 binding named DB (schema.sql). No Cron Trigger
+ * needed anymore — remove it from this Worker's Settings -> Triggers if one is still
+ * configured from before.
  */
-
-// CelesTrak GROUP ids mapped to the frontend's category ids (index.html: const CATS).
-// GROUP values are CelesTrak's documented group names for gp.php.
-const CELESTRAK_GROUPS = [
-  { group: 'stations', category: 'station' },
-  { group: 'gps-ops', category: 'navigation' },
-  { group: 'galileo', category: 'navigation' },
-  { group: 'glo-ops', category: 'navigation' },
-  { group: 'geo', category: 'geo-comm' },
-  { group: 'weather', category: 'weather' },
-  { group: 'science', category: 'science' },
-  { group: 'starlink', category: 'starlink' },
-  { group: 'cubesat', category: 'cubesat' },
-];
 
 const ALLOWED_ORIGIN = 'https://mgdufour.github.io';
 
@@ -40,154 +37,6 @@ function corsHeaders(origin){
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
     'Vary': 'Origin',
   };
-}
-
-// Standard fixed-column TLE line-2 parsing (NORAD two-line element format) — the same
-// column convention index.html already relies on elsewhere (e.g. NORAD ID from line 1).
-function parseInclinationDeg(line2){ return parseFloat(line2.slice(8, 16)); }
-function parseMeanMotion(line2){ return parseFloat(line2.slice(52, 63)); }
-function parseNoradId(line1){ return line1.slice(2, 7).trim(); }
-
-// KNOWN LIMITATION: neither CelesTrak format (json or tle) carries an owner/nation
-// field at all, confirmed against real responses — so this always falls through to
-// 'OTHER' for live-fetched objects today. The frontend's ownerBucketFor() already
-// treats an unrecognized code as OTHER, so this degrades safely rather than breaking,
-// but the Owner/Operator filter won't usefully bucket live data by nation until this
-// is backed by a real NORAD-ID-to-country lookup (out of scope for the initial cut —
-// the static RAW_OBJECTS snapshot still has accurate owner codes, this only affects
-// objects sourced from the live catalog-refresh Worker).
-function guessOwnerCode(record){
-  return typeof record.OWNER === 'string' && record.OWNER ? record.OWNER : 'OTHER';
-}
-
-// CelesTrak's FORMAT=tle response is plain text, three lines per object (name, then
-// the two TLE lines) with no separators between objects. Verified against a real
-// response, cross-checked line-by-line against the same object's FORMAT=json numbers
-// (inclination, RAAN, mean anomaly, mean motion, BSTAR all matched exactly) — FORMAT=json
-// turned out not to carry TLE_LINE1/TLE_LINE2 at all (it returns the orbital elements as
-// separate numeric fields instead), which is what made every record fail validation on
-// the first real run. Shaped to match what normalizeRecord() already expects, so nothing
-// downstream of this function needed to change.
-function parseTleText(text){
-  const lines = text.split('\n').map(l => l.replace(/\r$/, '')).filter(l => l.length > 0);
-  const records = [];
-  for (let i = 0; i + 2 < lines.length; i += 3){
-    records.push({ OBJECT_NAME: lines[i].trim(), TLE_LINE1: lines[i + 1], TLE_LINE2: lines[i + 2] });
-  }
-  return records;
-}
-
-async function fetchGroup(group){
-  const url = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=' + encodeURIComponent(group) + '&FORMAT=tle';
-  // CelesTrak's own usage guidance asks API consumers to identify themselves via
-  // User-Agent rather than send an anonymous/default one — a missing or generic UA is
-  // a common reason a request gets rate-limited or blocked outright, which lines up
-  // with the 403 seen on the heaviest-traffic group (starlink) in practice.
-  const resp = await fetch(url, {
-    headers: { 'User-Agent': 'northern-shrike-catalog-refresh/1.0 (+https://github.com/mgdufour/northern-shrike)' },
-  });
-  if (!resp.ok) throw new Error('CelesTrak returned ' + resp.status + ' for group ' + group);
-  const text = await resp.text();
-  return parseTleText(text);
-}
-
-// Validates and normalizes one CelesTrak GP JSON record. Returns null (never throws)
-// for a record missing required fields — one malformed record should not abort the
-// whole ingest run.
-function normalizeRecord(record, category){
-  const name = record.OBJECT_NAME;
-  const line1 = record.TLE_LINE1;
-  const line2 = record.TLE_LINE2;
-  if (typeof name !== 'string' || typeof line1 !== 'string' || typeof line2 !== 'string') return null;
-  if (line1.length < 69 || line2.length < 69) return null;
-  const noradId = parseNoradId(line1);
-  const inclinationDeg = parseInclinationDeg(line2);
-  const meanMotion = parseMeanMotion(line2);
-  if (!noradId || !Number.isFinite(inclinationDeg) || !Number.isFinite(meanMotion)) return null;
-  return { noradId, name, category, ownerCode: guessOwnerCode(record), line1, line2, inclinationDeg, meanMotion };
-}
-
-// D1's batch() sends many statements to the database in one round trip. The exact
-// per-batch statement ceiling isn't something to guess at (same lesson as the NOAA
-// field-name mismatch earlier) — 50 is a conservative chunk size chosen to stay well
-// under any plausible limit, not a value taken from Cloudflare's own documented max.
-const INSERT_BATCH_SIZE = 50;
-
-const INSERT_TLE_SQL = `INSERT INTO tle_history
-  (norad_id, name, category, owner_code, line1, line2, mean_motion, inclination_deg, fetched_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-async function runIngest(env){
-  const db = env.DB;
-  const startedAt = new Date().toISOString();
-  let groupsFetched = 0, recordsSeen = 0, recordsChanged = 0, recordsSkipped = 0;
-  let runError = null;
-
-  // Sequential, not concurrent: every group has been coming back 522 (Cloudflare's
-  // "origin never responded") across every ingest run for the past 24+ hours, while
-  // CelesTrak loads fine from a normal browser on a different network — consistent
-  // with CelesTrak throttling or blocking Cloudflare Workers' shared egress IP range
-  // specifically, not with a real per-group problem. Firing all 9 requests from this
-  // Worker at once could look like a burst to a rate limiter even when each request
-  // individually is legitimate; fetching one group at a time is a cheap thing to rule
-  // that theory in or out before concluding the block is IP-range-based (in which case
-  // no change to request pattern here would fix it).
-  const normalized = [];
-  for (const { group, category } of CELESTRAK_GROUPS){
-    let records;
-    try{
-      records = await fetchGroup(group);
-    } catch(e){
-      runError = (runError ? runError + '; ' : '') + group + ': ' + e.message;
-      continue;
-    }
-    groupsFetched++;
-    for (const raw of records){
-      recordsSeen++;
-      const rec = normalizeRecord(raw, category);
-      if (!rec){ recordsSkipped++; continue; }
-      normalized.push(rec);
-    }
-  }
-
-  // One query to learn every object's latest stored TLE, instead of one query per
-  // object — this (plus batched inserts below) is what makes ingesting a group the
-  // size of Starlink's thousands of satellites tractable in a single request, where
-  // a one-at-a-time check-then-write per object was not.
-  const latestByNorad = new Map();
-  if (normalized.length){
-    const { results } = await db.prepare(
-      `SELECT t.norad_id, t.line1, t.line2 FROM tle_history t
-       INNER JOIN (SELECT norad_id, MAX(fetched_at) AS max_fetched FROM tle_history GROUP BY norad_id) m
-         ON t.norad_id = m.norad_id AND t.fetched_at = m.max_fetched`
-    ).all();
-    for (const row of results) latestByNorad.set(row.norad_id, row);
-  }
-
-  const toInsert = normalized.filter(rec => {
-    const existing = latestByNorad.get(rec.noradId);
-    return !existing || existing.line1 !== rec.line1 || existing.line2 !== rec.line2;
-  });
-
-  for (let i = 0; i < toInsert.length; i += INSERT_BATCH_SIZE){
-    const chunk = toInsert.slice(i, i + INSERT_BATCH_SIZE);
-    try{
-      await db.batch(chunk.map(rec => db.prepare(INSERT_TLE_SQL).bind(
-        rec.noradId, rec.name, rec.category, rec.ownerCode, rec.line1, rec.line2, rec.meanMotion, rec.inclinationDeg, startedAt
-      )));
-      recordsChanged += chunk.length;
-    } catch(e){
-      // One bad batch shouldn't lose the rest — record the error and keep going.
-      runError = (runError ? runError + '; ' : '') + 'insert batch at offset ' + i + ': ' + e.message;
-    }
-  }
-
-  await db.prepare(
-    `INSERT INTO ingest_runs (started_at, finished_at, groups_fetched, records_seen, records_changed, records_skipped, error)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(startedAt, new Date().toISOString(), groupsFetched, recordsSeen, recordsChanged, recordsSkipped, runError).run();
-
-  return { groupsFetched, recordsSeen, recordsChanged, recordsSkipped, runError };
 }
 
 async function serveCatalog(db){
@@ -292,12 +141,9 @@ async function serveDecayWatch(db, days){
 
 // Named exports exist only so a test harness can call these directly — Cloudflare
 // Workers only ever invoke the default export below, so this has no runtime effect.
-export { normalizeRecord, parseTleText, runIngest, serveCatalog, serveManeuvers, serveDecayWatch };
+export { serveCatalog, serveManeuvers, serveDecayWatch };
 
 export default {
-  async scheduled(event, env, ctx){
-    ctx.waitUntil(runIngest(env));
-  },
   async fetch(request, env){
     const origin = request.headers.get('Origin') || '';
     const headers = { ...corsHeaders(origin), 'Content-Type': 'application/json' };
@@ -322,14 +168,6 @@ export default {
       if (url.pathname === '/ingest-status'){
         const { results } = await env.DB.prepare('SELECT * FROM ingest_runs ORDER BY started_at DESC LIMIT 5').all();
         return new Response(JSON.stringify(results), { headers });
-      }
-      if (url.pathname === '/trigger-ingest'){
-        // Manual escape hatch for testing: fires the same ingest the Cron Trigger runs,
-        // on demand, since the dashboard doesn't reliably expose a "fire now" button for
-        // Cron Triggers across all account/dashboard versions. Not authenticated — same
-        // posture as /catalog and /maneuvers (public reads); this just runs an ingest
-        // against public CelesTrak data into your own D1, nothing sensitive to protect.
-        return new Response(JSON.stringify(await runIngest(env)), { headers });
       }
       return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers });
     } catch(e){

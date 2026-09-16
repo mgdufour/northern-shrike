@@ -1,0 +1,38 @@
+name: Catalog ingest
+
+# Runs the CelesTrak -> D1 ingest on a schedule, from GitHub Actions' own runners.
+# Moved here from the catalog-refresh Worker's scheduled() handler because every
+# Worker-side ingest attempt failed with a 522 on every CelesTrak group, consistently,
+# for 24+ hours — while CelesTrak loaded fine from a normal browser the whole time.
+# Switching the Worker's fetches from concurrent to sequential made no difference
+# (still 100% failure), which rules out a burst/rate-limit explanation and points at
+# something blocking or badly timing out Cloudflare Workers' shared egress IP range
+# specifically. GitHub Actions runners use a different IP range.
+#
+# See worker/catalog-refresh/DEPLOY.md for how to set the three secrets this needs
+# (CF_ACCOUNT_ID, CF_D1_DATABASE_ID, CF_API_TOKEN) and what to remove on the Cloudflare
+# side (the now-unused Cron Trigger) now that this is the ingest path instead.
+
+"on":
+  schedule:
+    # Every 6 hours, matching the cadence the Worker's own Cron Trigger used to run at.
+    - cron: '0 */6 * * *'
+  workflow_dispatch: {} # manual "Run workflow" button in the Actions tab — same role
+                        # the Worker's old /trigger-ingest endpoint served, for testing
+                        # without waiting up to 6 hours for the next scheduled run.
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20' # needs a Node version with built-in fetch; no npm deps used
+
+      - name: Run CelesTrak -> D1 ingest
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: node .github/scripts/ingest-catalog.mjs
