@@ -3365,13 +3365,10 @@ function seedCopilot(){
   //   catalog-refresh Worker's known owner-code gap (CelesTrak doesn't carry a
   //   nation field, so every live-sourced object's owner bucket defaults to OTHER —
   //   a queryObjects(owner:'CA') chip would misleadingly return nothing right now).
-  // - ISS is guaranteed to be in the live catalog (the 'stations' group) and is a
-  //   genuine Canadian angle in its own right — Canadarm2 is Canada's.
   const suggestions = [
     { label: 'Full SITREP', message: 'Give me a full SITREP.', sitrep: true },
     { label: 'Close approaches involving Canadian assets?', message: 'Any close approaches involving Canadian assets?' },
     { label: "What's overhead Ottawa right now?", message: "What's overhead Ottawa right now?" },
-    { label: 'ISS — home of Canadarm2', message: 'Tell me about ISS (ZARYA)' },
     { label: 'Which objects are in GEO?', message: 'Which objects are in GEO?' },
   ];
   const row = document.getElementById('suggestRow');
