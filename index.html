@@ -1650,7 +1650,7 @@ function buildCatalog(rawObjects){
     const regime = classifyRegime(meanAltKm, ecc, inclDeg);
     const name = raw.n || 'UNKNOWN';
     list.push({
-      id: list.length, name, category: raw.c, satrec,
+      id: list.length, name, category: raw.c, satrec, line1: raw.l1, line2: raw.l2,
       inclDeg, ecc, aKm, apogeeKm, perigeeKm, meanAltKm, periodMin, raanDeg, argpDeg,
       epochDate, noradId: String(satrec.satnum), regime, isCanadian: isCanadianSat(name),
       ownerCode: raw.o || '', ownerBucket: ownerBucketFor(raw.o),
@@ -2512,9 +2512,25 @@ function renderGlobe(){
 
 /* ---------------- conjunction screening ---------------- */
 
+// The propagation + pair-comparison math runs in a Web Worker, off the main thread —
+// with the live catalog at ~11,600 objects, even with the altitude pre-filter this is
+// tens of millions of distance calculations, which was freezing the page for several
+// seconds right when it loaded (screening auto-runs 500ms after init — see the bottom
+// of this file). A Worker keeps the map draggable and Copilot usable while it computes.
+//
+// Built from an inline string turned into a Blob URL, rather than a separate .js file,
+// so the project stays deployable as a single index.html. This is the ONLY copy of
+// isSameComplex/angleDiffDeg/altitudeBandsCanReach and their constants — they used to
+// live on the main thread too, but since only runScreening() ever called them, moving
+// them here entirely (rather than keeping a second copy) removes any risk of the two
+// drifting out of sync with each other over time.
+const SCREENING_WORKER_SRC = `
+importScripts('https://cdn.jsdelivr.net/npm/satellite.js@6.0.1/dist/satellite.min.js');
+
 const CO_LOCATED_MAX_KM = 2;
 const COMPLEX_INCL_TOL_DEG = 2;
 const COMPLEX_RAAN_TOL_DEG = 10;
+const ALTITUDE_FILTER_MARGIN_KM = 10;
 
 function angleDiffDeg(a, b){
   const d = Math.abs(a-b) % 360;
@@ -2523,10 +2539,10 @@ function angleDiffDeg(a, b){
 
 // Two objects sharing an orbital plane (inclination + RAAN, within a tolerance loose
 // enough to absorb TLE noise) are treated as one physical complex — e.g. ISS plus its
-// currently-docked vehicles. This is checked instead of relying on propagated position,
-// because sample TLEs for independently-published "docked" objects can carry several
-// degrees of RAAN mismatch that no instantaneous distance check can see past, even
-// though anything actually docked is definitionally in the same orbital plane.
+// currently-docked vehicles — not relying on propagated position, because sample TLEs
+// for independently-published "docked" objects can carry several degrees of RAAN
+// mismatch that no instantaneous distance check can see past, even though anything
+// actually docked is definitionally in the same orbital plane.
 function isSameComplex(a, b){
   return a.category === 'station' && b.category === 'station'
     && Math.abs(a.inclDeg - b.inclDeg) < COMPLEX_INCL_TOL_DEG
@@ -2536,40 +2552,37 @@ function isSameComplex(a, b){
 // Cheap, mathematically exact pre-filter for the O(pairs x timesteps) loop below: for
 // any two points at radii rA and rB from Earth's center, the reverse triangle
 // inequality guarantees their 3D separation is always >= |rA - rB|, at every instant,
-// regardless of where either object actually is along its orbit. So if object A's
-// altitude never leaves [perigeeA, apogeeA] and B's never leaves [perigeeB, apogeeB],
-// the closest those two altitude bands ever get bounds the closest the *objects* can
-// ever get — if that bound alone already exceeds the threshold, no amount of
-// propagating positions minute-by-minute across the lookahead window can find them
-// closer, so the full per-timestep distance loop can be skipped for that pair
-// entirely. This has zero false negatives: it only ever skips pairs that are
-// geometrically provably incapable of conjuncting, never a pair the unfiltered loop
-// would have found. ALTITUDE_FILTER_MARGIN_KM is a conservative safety buffer (not a
-// precision-driven value) against a TLE's perigee/apogee drifting slightly over the
-// lookahead window (drag, precession) — it only ever makes the filter *less*
-// aggressive, keeping a pair that's borderline rather than risking dropping one that
-// isn't quite as provably safe as the raw numbers suggest.
-const ALTITUDE_FILTER_MARGIN_KM = 10;
-
+// regardless of where either object actually is along its orbit. Zero false negatives:
+// only ever skips pairs geometrically provably incapable of conjuncting. Margin is a
+// conservative safety buffer against a TLE's perigee/apogee drifting slightly over the
+// lookahead window, not a precision-driven value — it only ever makes the filter less
+// aggressive.
 function altitudeBandsCanReach(a, b, thresholdKm){
   const gap = Math.max(0, a.perigeeKm - b.apogeeKm, b.perigeeKm - a.apogeeKm) - ALTITUDE_FILTER_MARGIN_KM;
   return gap <= thresholdKm;
 }
 
-function runScreening(lookaheadHours){
-  const btn = document.getElementById('runScreeningBtn');
-  const body = document.getElementById('conjBody');
-  btn.disabled = true; btn.textContent = 'Screening…';
-  body.innerHTML = '<div class="conj-empty">Propagating catalog across the lookahead window and screening regime-bucketed object pairs…</div>';
-
-  setTimeout(() => {
+self.onmessage = (ev) => {
+  const { type, requestId, lookaheadHours, thresholds, objects } = ev.data;
+  if (type !== 'screen') return;
+  try{
     const now = new Date();
     const stepMinutes = lookaheadHours<=6 ? 2 : (lookaheadHours<=24 ? 5 : 15);
     const steps = Math.floor(lookaheadHours*60/stepMinutes) + 1;
-    const thresholds = state.alertThresholds;
+
+    // Re-parse each object's satrec from its raw TLE lines here, rather than relying on
+    // structured-cloning the already-parsed satrec across the postMessage boundary —
+    // this reuses the exact same, already-trusted satellite.twoline2satrec() path the
+    // main thread itself uses in buildCatalog(), instead of a new, unverified assumption
+    // about which of satrec's internal fields survive structured clone intact.
+    const withSatrec = objects.map(o => {
+      let satrec = null;
+      try { satrec = satellite.twoline2satrec(o.line1, o.line2); } catch(e){ satrec = null; }
+      return { ...o, satrec };
+    }).filter(o => o.satrec);
 
     const buckets = {};
-    for (const o of state.objects){ (buckets[o.regime] = buckets[o.regime] || []).push(o); }
+    for (const o of withSatrec){ (buckets[o.regime] = buckets[o.regime] || []).push(o); }
 
     const results = [];
     let pairsChecked = 0;
@@ -2616,9 +2629,9 @@ function runScreening(lookaheadHours){
             if (d2 < minD2){ minD2 = d2; minS = s; }
           }
           if (minD2 < thr2){
-            // A pair already within CO_LOCATED_MAX_KM right now, or sharing an orbital plane
-            // (isSameComplex), is treated as one physical structure — e.g. ISS and a docked
-            // vehicle — not a real conjunction.
+            // A pair already within CO_LOCATED_MAX_KM right now, or sharing an orbital
+            // plane (isSameComplex), is treated as one physical structure — not a real
+            // conjunction.
             if (startD2 < CO_LOCATED_MAX_KM*CO_LOCATED_MAX_KM || isSameComplex(arr[i], arr[j])){
               coLocatedExcluded++;
               continue;
@@ -2630,7 +2643,7 @@ function runScreening(lookaheadHours){
               aName: arr[i].name, bName: arr[j].name, aId: arr[i].id, bId: arr[j].id,
               aCanadian: arr[i].isCanadian, bCanadian: arr[j].isCanadian,
               regime, missKm: Math.sqrt(minD2), closingSpeedKmS,
-              tcaDate: new Date(now.getTime() + minS*stepMinutes*60000),
+              tcaIso: new Date(now.getTime() + minS*stepMinutes*60000).toISOString(),
             });
           }
         }
@@ -2638,10 +2651,63 @@ function runScreening(lookaheadHours){
     }
 
     results.sort((a,b) => a.missKm - b.missKm);
-    state.conjunctions = { results, lookaheadHours, computedAt: now, pairsChecked, coLocatedExcluded, altitudeFiltered };
+    self.postMessage({
+      type: 'result', requestId, results, pairsChecked, coLocatedExcluded, altitudeFiltered,
+      computedAtIso: now.toISOString(),
+    });
+  } catch(e){
+    self.postMessage({ type: 'error', requestId, message: String(e && e.message || e) });
+  }
+};
+`;
+
+let screeningWorker = null;
+function getScreeningWorker(){
+  if (!screeningWorker){
+    const blob = new Blob([SCREENING_WORKER_SRC], { type: 'application/javascript' });
+    screeningWorker = new Worker(URL.createObjectURL(blob));
+  }
+  return screeningWorker;
+}
+
+let screeningRequestId = 0;
+
+function runScreening(lookaheadHours){
+  const btn = document.getElementById('runScreeningBtn');
+  const body = document.getElementById('conjBody');
+  btn.disabled = true; btn.textContent = 'Screening…';
+  body.innerHTML = '<div class="conj-empty">Propagating catalog across the lookahead window and screening regime-bucketed object pairs…</div>';
+
+  const requestId = ++screeningRequestId;
+  // Only the plain data the worker actually needs — TLE lines rather than the parsed
+  // satrec (see the worker source's comment on why), no satrec/lat/lon/etc along for
+  // the ride.
+  const objects = state.objects.map(o => ({
+    id: o.id, name: o.name, category: o.category, regime: o.regime,
+    inclDeg: o.inclDeg, raanDeg: o.raanDeg, perigeeKm: o.perigeeKm, apogeeKm: o.apogeeKm,
+    isCanadian: o.isCanadian, line1: o.line1, line2: o.line2,
+  }));
+
+  const worker = getScreeningWorker();
+  const onMessage = (ev) => {
+    const msg = ev.data;
+    if (!msg || msg.requestId !== requestId) return; // stale response from a superseded request — ignore
+    worker.removeEventListener('message', onMessage);
+    if (msg.type === 'error'){
+      body.innerHTML = '<div class="conj-empty">Screening failed: '+esc(msg.message)+'</div>';
+      btn.disabled = false; btn.textContent = 'Run Screening';
+      return;
+    }
+    const results = msg.results.map(r => ({ ...r, tcaDate: new Date(r.tcaIso) }));
+    state.conjunctions = {
+      results, lookaheadHours, computedAt: new Date(msg.computedAtIso),
+      pairsChecked: msg.pairsChecked, coLocatedExcluded: msg.coLocatedExcluded, altitudeFiltered: msg.altitudeFiltered,
+    };
     renderConjunctions();
     btn.disabled = false; btn.textContent = 'Run Screening';
-  }, 30);
+  };
+  worker.addEventListener('message', onMessage);
+  worker.postMessage({ type: 'screen', requestId, lookaheadHours, thresholds: state.alertThresholds, objects });
 }
 
 function formatCountdown(target, now){
