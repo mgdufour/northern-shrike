@@ -123,27 +123,32 @@ async function runIngest(env){
   let groupsFetched = 0, recordsSeen = 0, recordsChanged = 0, recordsSkipped = 0;
   let runError = null;
 
-  // Fetch every CelesTrak group concurrently — these are independent HTTP calls, no
-  // reason to make one wait for the previous one to finish.
-  const settled = await Promise.allSettled(
-    CELESTRAK_GROUPS.map(async ({ group, category }) => ({ category, records: await fetchGroup(group) }))
-  );
-
+  // Sequential, not concurrent: every group has been coming back 522 (Cloudflare's
+  // "origin never responded") across every ingest run for the past 24+ hours, while
+  // CelesTrak loads fine from a normal browser on a different network — consistent
+  // with CelesTrak throttling or blocking Cloudflare Workers' shared egress IP range
+  // specifically, not with a real per-group problem. Firing all 9 requests from this
+  // Worker at once could look like a burst to a rate limiter even when each request
+  // individually is legitimate; fetching one group at a time is a cheap thing to rule
+  // that theory in or out before concluding the block is IP-range-based (in which case
+  // no change to request pattern here would fix it).
   const normalized = [];
-  settled.forEach((result, i) => {
-    const { group } = CELESTRAK_GROUPS[i];
-    if (result.status === 'rejected'){
-      runError = (runError ? runError + '; ' : '') + group + ': ' + result.reason.message;
-      return;
+  for (const { group, category } of CELESTRAK_GROUPS){
+    let records;
+    try{
+      records = await fetchGroup(group);
+    } catch(e){
+      runError = (runError ? runError + '; ' : '') + group + ': ' + e.message;
+      continue;
     }
     groupsFetched++;
-    for (const raw of result.value.records){
+    for (const raw of records){
       recordsSeen++;
-      const rec = normalizeRecord(raw, result.value.category);
+      const rec = normalizeRecord(raw, category);
       if (!rec){ recordsSkipped++; continue; }
       normalized.push(rec);
     }
-  });
+  }
 
   // One query to learn every object's latest stored TLE, instead of one query per
   // object — this (plus batched inserts below) is what makes ingesting a group the
