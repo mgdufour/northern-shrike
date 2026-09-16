@@ -3356,12 +3356,23 @@ async function initCopilot(){
 
 function seedCopilot(){
   appendMessage('ai', 'Analyst Copilot online. I have tool access to the live tracked-object catalog and the latest conjunction screening — ask me anything about what’s on the picture.');
+  // Canada-relevant by design (this tool already flags Canadian assets throughout —
+  // pinned objects, the 🇨🇦 critical-conjunction callout), but each one is still
+  // answerable from data actually in the live catalog, not just picked for theme:
+  // - Canadian-asset conjunctions and GEO both key off real, working tool fields
+  //   (involvesCanadianAsset, and GEO's Anik/Nimiq Canadian comsats specifically).
+  // - Ottawa overhead uses overheadNow(), pure geometry, unaffected by the live
+  //   catalog-refresh Worker's known owner-code gap (CelesTrak doesn't carry a
+  //   nation field, so every live-sourced object's owner bucket defaults to OTHER —
+  //   a queryObjects(owner:'CA') chip would misleadingly return nothing right now).
+  // - ISS is guaranteed to be in the live catalog (the 'stations' group) and is a
+  //   genuine Canadian angle in its own right — Canadarm2 is Canada's.
   const suggestions = [
     { label: 'Full SITREP', message: 'Give me a full SITREP.', sitrep: true },
+    { label: 'Close approaches involving Canadian assets?', message: 'Any close approaches involving Canadian assets?' },
+    { label: "What's overhead Ottawa right now?", message: "What's overhead Ottawa right now?" },
+    { label: 'ISS — home of Canadarm2', message: 'Tell me about ISS (ZARYA)' },
     { label: 'Which objects are in GEO?', message: 'Which objects are in GEO?' },
-    { label: 'Any close approaches inside 24h?', message: 'Any close approaches inside 24h?' },
-    { label: 'Tell me about ISS (ZARYA)', message: 'Tell me about ISS (ZARYA)' },
-    { label: 'How many Chinese objects are we tracking?', message: 'How many Chinese objects are we tracking?' },
   ];
   const row = document.getElementById('suggestRow');
   row.innerHTML = suggestions.map(s =>
