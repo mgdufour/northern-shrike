@@ -2971,7 +2971,8 @@ function buildTools(toolLog){
       inputSchema: { type:'object', properties: {
         category: { type:'string', enum: CATS.map(c=>c.id) },
         regime: { type:'string', enum: REGIMES },
-        owner: { type:'string', enum: OWNERS.map(o=>o.id), description: 'Owner/operator bucket derived from CelesTrak SATCAT: CA=Canada, US=United States, RU=Russia/CIS, CN=China, NATO=NATO-owned, OTHER=other/unknown owner.' },
+        owner: { type:'string', enum: OWNERS.map(o=>o.id), description: 'Owner/operator bucket derived from CelesTrak SATCAT: CA=Canada, US=United States, RU=Russia/CIS, CN=China, NATO=NATO-owned, OTHER=other/unknown owner. WARNING: for live-sourced objects (when the catalog is backed by the live Worker rather than the static sample) this is almost always OTHER — the live ingest reads plain TLE text, which carries no owner/nation field at all. Do not treat owner=OTHER or a zero-match owner query as proof an object or nation is absent from the catalog. For Canada specifically, use isCanadian instead, which is derived from known Canadian satellite names and works regardless of data source.' },
+        isCanadian: { type:'boolean', description: 'Filter to (or exclude) Canadian-operated satellites, matched by known name patterns (RADARSAT, RCM, SCISAT, CASSIOPE, NEOSSAT, M3MSAT, SAPPHIRE, MOST, BRITE-CA, CanX, ANIK, NIMIQ, ExactView) rather than the unreliable owner field above. This is the correct way to answer "what Canadian satellites are in the catalog" style questions.' },
         nameContains: { type:'string' },
         limit: { type:'number' },
       } },
@@ -2981,6 +2982,7 @@ function buildTools(toolLog){
         if (input && input.category) arr = arr.filter(o=>o.category===input.category);
         if (input && input.regime) arr = arr.filter(o=>o.regime===input.regime);
         if (input && input.owner) arr = arr.filter(o=>o.ownerBucket===input.owner);
+        if (input && typeof input.isCanadian === 'boolean') arr = arr.filter(o=>o.isCanadian===input.isCanadian);
         if (input && input.nameContains){
           const q = String(input.nameContains).toLowerCase();
           arr = arr.filter(o=>o.name.toLowerCase().includes(q));
@@ -2988,7 +2990,7 @@ function buildTools(toolLog){
         const total = arr.length;
         const lim = Math.min((input && input.limit) || 20, 40);
         const matches = arr.slice(0,lim).map(o => ({
-          name:o.name, category:o.category, regime:o.regime, owner:o.ownerBucket,
+          name:o.name, category:o.category, regime:o.regime, owner:o.ownerBucket, isCanadian:o.isCanadian,
           altitudeKm: Math.round(o.meanAltKm), inclinationDeg: +o.inclDeg.toFixed(1), periodMin: +o.periodMin.toFixed(1),
         }));
         return { totalMatches: total, returned: matches.length, matches };
@@ -3006,7 +3008,7 @@ function buildTools(toolLog){
         if (r.ambiguous) return { error: 'name matches more than one tracked object — ask the operator which one', matches: r.ambiguous };
         const o = r.object;
         return {
-          name:o.name, category:o.category, regime:o.regime, noradId:o.noradId, owner:o.ownerBucket,
+          name:o.name, category:o.category, regime:o.regime, noradId:o.noradId, owner:o.ownerBucket, isCanadian:o.isCanadian,
           tleEpochUtc: fmtUtc(o.epochDate),
           currentLatDeg: o.valid?+o.lat.toFixed(2):null, currentLonDeg: o.valid?+o.lon.toFixed(2):null,
           currentAltitudeKm: o.valid?+o.altKm.toFixed(1):null, velocityKmS: o.valid?+o.velKmS.toFixed(3):null,
