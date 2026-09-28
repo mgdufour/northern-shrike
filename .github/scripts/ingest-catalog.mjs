@@ -90,18 +90,30 @@ const CELESTRAK_GROUPS = [
   { group: 'glo-ops', category: 'navigation' },
   { group: 'geo', category: 'geo-comm' },
   { group: 'weather', category: 'weather' },
-  // Earth-observation/resource-monitoring satellites — added because this group is
-  // where RADARSAT-1/2 and the RADARSAT Constellation Mission (RCM) live on CelesTrak.
-  // Without it the live catalog silently dropped Canada's flagship satellites: the
-  // frontend's isCanadianSat() name-matching only ever sees what's actually been
-  // ingested, and none of the other 9 original groups carry them. Mapped to the
-  // existing 'weather' category (labeled "Weather / Earth Obs" in the UI) rather than
-  // a new one, since that's already the closest fit and avoids adding a new
-  // category/color/legend entry for one group.
+  // Earth-observation/resource-monitoring satellites — this is where RADARSAT-1/2
+  // live on CelesTrak. Mapped to the existing 'weather' category (labeled "Weather /
+  // Earth Obs" in the UI) rather than a new one, since that's already the closest fit
+  // and avoids adding a new category/color/legend entry for one group. NOTE: this
+  // group does NOT carry the RADARSAT Constellation Mission (RCM-1/2/3) — confirmed by
+  // their continued absence after this group was added — see CELESTRAK_NAME_SEARCHES
+  // below for how those are actually covered.
   { group: 'resource', category: 'weather' },
   { group: 'science', category: 'science' },
   { group: 'starlink', category: 'starlink' },
   { group: 'cubesat', category: 'cubesat' },
+];
+
+// Supplemental name-substring fetches, for satellites confirmed missing from every
+// CELESTRAK_GROUPS sweep above — RCM-1/2/3 (named "RADARSAT CONSTELLATION MISSION-1/2/3"
+// on CelesTrak) aren't in the 'resource' group despite being Earth-observation
+// satellites, and no other curated group covers them either. Rather than guess at
+// further named groups, this queries CelesTrak's NAME= parameter directly (a substring
+// match against the object name, independent of which internal group — if any — the
+// object is classified under), which also naturally covers RADARSAT-1/2 again (already
+// fetched above; deduplicated below) and any future RADARSAT-family satellite without
+// needing another code change.
+const CELESTRAK_NAME_SEARCHES = [
+  { name: 'RADARSAT', category: 'weather' },
 ];
 
 function parseInclinationDeg(line2){ return parseFloat(line2.slice(8, 16)); }
@@ -127,6 +139,16 @@ async function fetchGroup(group){
     headers: { 'User-Agent': 'northern-shrike-catalog-ingest/1.0 (+https://github.com/mgdufour/northern-shrike)' },
   });
   if (!resp.ok) throw new Error('CelesTrak returned ' + resp.status + ' for group ' + group);
+  const text = await resp.text();
+  return parseTleText(text);
+}
+
+async function fetchByName(name){
+  const url = 'https://celestrak.org/NORAD/elements/gp.php?NAME=' + encodeURIComponent(name) + '&FORMAT=tle';
+  const resp = await fetch(url, {
+    headers: { 'User-Agent': 'northern-shrike-catalog-ingest/1.0 (+https://github.com/mgdufour/northern-shrike)' },
+  });
+  if (!resp.ok) throw new Error('CelesTrak returned ' + resp.status + ' for name search ' + name);
   const text = await resp.text();
   return parseTleText(text);
 }
@@ -195,9 +217,42 @@ async function main(){
     }
   }
 
+  for (const { name, category } of CELESTRAK_NAME_SEARCHES){
+    console.log('Fetching name search: ' + name);
+    let records;
+    try{
+      records = await fetchByName(name);
+    } catch(e){
+      console.error('  failed: ' + e.message);
+      runError = (runError ? runError + '; ' : '') + name + ': ' + e.message;
+      continue;
+    }
+    groupsFetched++;
+    console.log('  got ' + records.length + ' records');
+    for (const raw of records){
+      recordsSeen++;
+      const rec = normalizeRecord(raw, category);
+      if (!rec){ recordsSkipped++; continue; }
+      normalized.push(rec);
+    }
+  }
+
+  // A satellite can be picked up by more than one source above (e.g. RADARSAT-2 by
+  // both the 'resource' group and the 'RADARSAT' name search) — dedupe by NORAD ID
+  // before diffing against D1, otherwise the same object could be inserted twice with
+  // the same fetched_at timestamp, which would make "latest TLE per object" queries
+  // (MAX(fetched_at) GROUP BY norad_id) ambiguous between the duplicate rows.
+  const seenNorad = new Set();
+  const deduped = [];
+  for (const rec of normalized){
+    if (seenNorad.has(rec.noradId)) continue;
+    seenNorad.add(rec.noradId);
+    deduped.push(rec);
+  }
+
   console.log('Checking latest stored TLE per object for changes...');
   const latestByNorad = new Map();
-  if (normalized.length){
+  if (deduped.length){
     const rows = await d1Query(
       `SELECT t.norad_id, t.line1, t.line2 FROM tle_history t
        INNER JOIN (SELECT norad_id, MAX(fetched_at) AS max_fetched FROM tle_history GROUP BY norad_id) m
@@ -206,7 +261,7 @@ async function main(){
     for (const row of rows) latestByNorad.set(row.norad_id, row);
   }
 
-  const toInsert = normalized.filter(rec => {
+  const toInsert = deduped.filter(rec => {
     const existing = latestByNorad.get(rec.noradId);
     return !existing || existing.line1 !== rec.line1 || existing.line2 !== rec.line2;
   });
