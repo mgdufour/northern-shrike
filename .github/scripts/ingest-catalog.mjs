@@ -90,6 +90,15 @@ const CELESTRAK_GROUPS = [
   { group: 'glo-ops', category: 'navigation' },
   { group: 'geo', category: 'geo-comm' },
   { group: 'weather', category: 'weather' },
+  // Earth-observation/resource-monitoring satellites — added because this group is
+  // where RADARSAT-1/2 and the RADARSAT Constellation Mission (RCM) live on CelesTrak.
+  // Without it the live catalog silently dropped Canada's flagship satellites: the
+  // frontend's isCanadianSat() name-matching only ever sees what's actually been
+  // ingested, and none of the other 9 original groups carry them. Mapped to the
+  // existing 'weather' category (labeled "Weather / Earth Obs" in the UI) rather than
+  // a new one, since that's already the closest fit and avoids adding a new
+  // category/color/legend entry for one group.
+  { group: 'resource', category: 'weather' },
   { group: 'science', category: 'science' },
   { group: 'starlink', category: 'starlink' },
   { group: 'cubesat', category: 'cubesat' },
